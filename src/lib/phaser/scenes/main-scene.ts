@@ -10,7 +10,6 @@ export class MainScene extends Phaser.Scene {
 
     // Keep gameplay properties
     private walkSpeed = 200;
-    private runSpeed = 350;
     private jumpVelocity = -400;
     private platformScrollMargin = 400;
     private platformKillOffset = 800;
@@ -39,8 +38,8 @@ export class MainScene extends Phaser.Scene {
     private isPoweredUp = false;
     private powerupDuration = 15000; // 15 seconds in milliseconds
     private powerupTimer = 0;
-    private normalRunSpeed = 350; // Store original run speed
-    private powerupRunSpeed = 437; // 1.25x normal run speed
+    private normalRunSpeed = 250; 
+    private powerupRunSpeed = 300; 
     private powerupScoreMultiplier = 2; // 2x points during powerup
     private powerupIndicator?: Phaser.GameObjects.Text; // Visual indicator for powerup status
 
@@ -613,7 +612,7 @@ export class MainScene extends Phaser.Scene {
             powerup.setOrigin(0.5, 0.5);
             
             // Set scale and enable physics
-            powerup.setScale(0.7);
+            powerup.setScale(0.35);
             
             if (powerup.body) {
                 powerup.body.enable = true;
@@ -827,7 +826,7 @@ export class MainScene extends Phaser.Scene {
     // New method to display floating score text
     showFloatingScore(x: number, y: number, text: string) {
         const style = { 
-            fontSize: '24px', 
+            fontSize: '24px',
             color: '#FFFF00', 
             fontStyle: 'bold',
             stroke: '#000000',

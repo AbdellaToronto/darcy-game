@@ -17,7 +17,7 @@ const config: Phaser.Types.Core.GameConfig = {
         default: 'arcade',
         arcade: {
             gravity: { x: 0, y: 500 }, // Increased gravity
-            debug: process.env.NODE_ENV === 'development', // Debug in dev
+            debug: false, // Disable debug overlays (pink boxes and green lines)
             // worldBounds will be set in the scene create method
         }
     },
