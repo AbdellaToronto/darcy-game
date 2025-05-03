@@ -40,6 +40,13 @@ export class MainScene extends Phaser.Scene {
     private touchAttack = false;
     private pointer2PreviouslyDown = false;
 
+    // --- New Gameplay State ---
+    private score = 0;
+    private lives!: number;
+    private startTime = 0; 
+    private scoreText?: Phaser.GameObjects.Text;
+    private livesText?: Phaser.GameObjects.Text;
+
     constructor() {
         super({ key: 'MainScene' });
     }
@@ -74,6 +81,17 @@ export class MainScene extends Phaser.Scene {
         console.log('Creating game objects in MainScene...');
         const gameWidth = this.scale.width;
         const gameHeight = this.scale.height;
+
+        // --- Retrieve lives from data manager, default to 3 on first run ---
+        this.lives = this.data.get('currentLives') ?? 3;
+        this.data.reset(); // Optional: Clear data manager after retrieving if not needed elsewhere
+        console.log(`CREATE - Retrieved/Set this.lives to: ${this.lives}`);
+
+        // Initialize other state
+        this.score = 0; // Reset score on create
+        this.startTime = this.time.now;
+        this.isAttacking = false; 
+        this.isRunning = false; 
 
         // --- World Bounds (Set target width) --- 
         this.physics.world.setBounds(0, 0, this.targetWorldWidth, gameHeight + 200);
@@ -163,6 +181,16 @@ export class MainScene extends Phaser.Scene {
              }
         }
 
+        // --- UI Text --- 
+        const textStyle = { fontSize: '24px', color: '#FFFF00', fontStyle: 'bold', stroke: '#000000', strokeThickness: 4 };
+        // Score Text (Top-Left)
+        this.scoreText = this.add.text(16, 16, `Score: ${this.score}`, textStyle)
+            .setScrollFactor(0); // Fix text to camera
+        // Lives Text (Top-Right)
+        this.livesText = this.add.text(this.scale.width - 16, 16, `Lives: ${this.lives}`, textStyle)
+            .setOrigin(1, 0) // Align to top-right
+            .setScrollFactor(0); // Fix text to camera
+
         // --- Handle attack animation completion --- 
         if (this.player) {
             const completeEventName = `animationcomplete-attack`;
@@ -232,6 +260,9 @@ export class MainScene extends Phaser.Scene {
 
         // --- Emit Ready Event --- 
         EventBus.emit('current-scene-ready', this);
+
+        console.log(`CREATE START - this.lives = ${this.lives}`);
+        console.log(`CREATE - Initialized UI Text with Lives: ${this.lives}`);
     }
 
     // Helper function to add a platform
@@ -299,95 +330,95 @@ export class MainScene extends Phaser.Scene {
     }
 
     update() {
-        if (!this.cursors || !this.player || !this.platforms || !this.spaceBar || !this.shiftKey) {
-            return;
+        // --- Player/System Checks --- 
+        if (!this.player || !this.player.active) {
+            console.warn("Player inactive or destroyed! Forcing GameOver.");
+            this.handleGameOver(); // Use new handler
+            return; 
+        }
+        if (!this.cursors || !this.player.body || !this.platforms || !this.spaceBar || !this.shiftKey || !this.scoreText || !this.livesText) {
+            return; // Wait for all elements including UI text
         }
 
-        // --- Player Existence Check --- 
-        if (!this.player || !this.player.active) { 
-            // If player is gone for any reason, restart (or go to game over later)
-            console.log("Player inactive or destroyed! Restarting scene.");
-            this.scene.restart();
-            return; // Stop further processing this frame
-        }
+        // --- Update Score --- 
+        // Simple time-based score for now
+        const elapsedSeconds = Math.floor((this.time.now - this.startTime) / 1000);
+        this.score = elapsedSeconds * 10; // e.g., 10 points per second
+        this.scoreText.setText(`Score: ${this.score}`);
 
-        // --- Get Input States --- 
-        // const keyboardLeft = this.cursors.left.isDown; // REMOVE Left input check
-        // const keyboardRight = this.cursors.right.isDown; // REMOVE Right input check
+        // --- Input States --- 
         const keyboardUp = this.cursors.up.isDown;
         const keyboardAttack = Phaser.Input.Keyboard.JustDown(this.spaceBar);
         this.isRunning = this.shiftKey.isDown; 
-        // const moveLeft = keyboardLeft || this.touchMoveDirection === 'left'; // REMOVE Left input processing
-        // const moveRight = keyboardRight || this.touchMoveDirection === 'right'; // REMOVE Right input processing
         const doJump = keyboardUp || this.touchJump;
         const doAttack = keyboardAttack || this.touchAttack;
         this.touchJump = false;
         this.touchAttack = false;
         const currentSpeed = this.isRunning ? this.runSpeed : this.walkSpeed;
-
-        // --- Set Player Velocity & Animation --- 
-
-        // Attack (Keep priority)
         if (doAttack && !this.isAttacking && this.player.body?.touching.down) {
             console.log("LOG: Attack conditions met. Playing 'attack'...");
             this.isAttacking = true;
-            this.player.setVelocityX(0); // Stop horizontal movement during attack
-            this.player.anims.play('attack', false); 
+            this.player.setVelocityX(0);
+            this.player.anims.play('attack', false);
             console.log(`LOG: Called play('attack'). Current anim: ${this.player.anims.currentAnim?.key}`);
         }
-
-        // Auto-Run / Animation (only if not attacking)
         if (!this.isAttacking) {
-            // --- Always move right --- 
-            this.player.setVelocityX(currentSpeed); 
-            this.player.setFlipX(false); // Ensure facing right
-
-            // --- Set animation based on state --- 
+            this.player.setVelocityX(currentSpeed);
+            this.player.setFlipX(false);
             const animKey = this.isRunning ? 'run' : 'walk';
             if (this.player.body?.touching.down) { 
-                // Play walk/run animation if on ground
                 if (this.player.anims.currentAnim?.key !== animKey) {
                     this.player.anims.play(animKey, true);
                 }
             } else {
-                // --- In Air Animation (Optional) --- 
-                // You might want a specific jump/fall animation here
-                // For now, let's just stop walk/run anims if not already stopped
-                // Or maybe keep the last frame of walk/run?
-                // Let's use the idle frame (frame 0) for jump/fall for now.
                 if (this.player.anims.currentAnim?.key !== 'idle') {
-                     this.player.anims.play('idle', true); // Use idle anim while in air
+                     this.player.anims.play('idle', true);
                 }
             }
         }
-
-        // Jump (Keep jump logic, but ensure it doesn't override auto-run X velocity)
         if (doJump && this.player.body?.touching.down && !this.isAttacking) {
             this.player.setVelocityY(this.jumpVelocity);
-            // No longer need to stop X velocity on jump
         }
-
-        // --- Level Gen, Fall Check, Pointer State Update ---
         this.generatePlatforms();
-
-        // --- Fall Check (More Robust) ---
-        const worldBottomThreshold = this.physics.world.bounds.height - 10; // A little buffer above absolute bottom
         
-        // Check if player object and its body exist before accessing properties
-        if (this.player && this.player.body) {
-            // Check the player's bottom edge against the world threshold
-            if (this.player.body.bottom > worldBottomThreshold) {
-                console.log(`Player fell off! Y: ${this.player.y.toFixed(2)}, Bottom: ${this.player.body.bottom.toFixed(2)} > Threshold: ${worldBottomThreshold.toFixed(2)}. Game Over.`);
-                this.scene.start('GameOver'); // Go to GameOver scene
-                // No return needed here as scene transition stops current execution
-            }
-        } else if (!this.player) {
-            // Handle case where player might be destroyed unexpectedly
-            console.warn("Player doesn't exist in update fall check! Restarting.");
-            this.scene.restart(); // Fallback restart if player is missing
+        // --- Fall Check / Lose Life --- 
+        const worldBottomThreshold = this.physics.world.bounds.height - 10;
+        if (this.player.body.bottom > worldBottomThreshold) {
+            this.loseLife(); 
+            return; // Stop further processing this frame after losing life
         }
 
         // --- Update previous pointer states --- 
         this.pointer2PreviouslyDown = this.input.pointer2?.isDown ?? false;
+    }
+
+    // --- New Method: Lose Life / Game Over Check ---
+    loseLife() {
+        if (!this.player || !this.livesText) return;
+        
+        const livesBefore = this.lives;
+        this.lives--;
+        const livesAfter = this.lives;
+        console.log(`LOSE LIFE - Before: ${livesBefore}, After: ${livesAfter}`);
+        
+        this.livesText.setText(`Lives: ${this.lives}`); 
+        console.log(`LOSE LIFE - Updated UI Text to: ${this.lives}`);
+
+        if (this.lives <= 0) {
+            console.log("LOSE LIFE - Calling handleGameOver()");
+            this.handleGameOver();
+        } else {
+            // --- Store lives in data manager before restart ---
+            console.log(`LOSE LIFE - Storing lives: ${this.lives} in data manager and restarting.`);
+            this.data.set('currentLives', this.lives);
+            this.scene.restart(); // No need to pass data object now
+        }
+    }
+
+    // --- New Method: Handle Game Over Transition ---
+    handleGameOver() {
+         console.log(`Game Over! Final Score: ${this.score}`);
+         // Pass final score to GameOver scene
+         this.scene.start('GameOver', { finalScore: this.score });
     }
 } 
