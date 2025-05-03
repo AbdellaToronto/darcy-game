@@ -1,5 +1,6 @@
 import * as Phaser from 'phaser';
 import { MainScene } from '@/lib/phaser/scenes/main-scene';
+import { GameOver } from '@/lib/phaser/scenes/game-over';
 
 const gameWidth = 800; // Keep track of base width
 const gameHeight = 600; // Keep track of base height
@@ -20,7 +21,8 @@ const config: Phaser.Types.Core.GameConfig = {
     },
     scene: [
         // Add other scenes like Boot, Preloader here if needed
-        MainScene
+        MainScene,
+        GameOver
     ],
     scale: {
         mode: Phaser.Scale.RESIZE,

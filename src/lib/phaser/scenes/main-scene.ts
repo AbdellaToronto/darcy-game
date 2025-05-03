@@ -16,6 +16,7 @@ export class MainScene extends Phaser.Scene {
     private platformKillOffset = 800;
     private platformWidth = 300;
     private platformHeight = 32;
+    private targetWorldWidth = 20000; // Target width for ~1 min run
 
     // Keep game objects and state
     private player?: Phaser.Physics.Arcade.Sprite;
@@ -74,8 +75,9 @@ export class MainScene extends Phaser.Scene {
         const gameWidth = this.scale.width;
         const gameHeight = this.scale.height;
 
-        // --- World Bounds --- 
-        this.physics.world.setBounds(0, 0, 50000, gameHeight + 200);
+        // --- World Bounds (Set target width) --- 
+        this.physics.world.setBounds(0, 0, this.targetWorldWidth, gameHeight + 200);
+        this.cameras.main.setBounds(0, 0, this.targetWorldWidth, gameHeight); // Update camera bounds too
 
         // --- Define Animations from Individual Images --- 
         const idleFrames = [{ key: 'player_r1_c1' }]; // Use first walk frame as idle
@@ -139,7 +141,7 @@ export class MainScene extends Phaser.Scene {
             immovable: true,
         });
         let initialGroundX = 0;
-        while (initialGroundX < this.playerStartX + this.platformWidth * 2) {
+        while (initialGroundX < gameWidth * 2) { 
             this.addPlatform(initialGroundX + this.platformWidth / 2, groundY);
             initialGroundX += this.platformWidth;
         }
@@ -147,16 +149,18 @@ export class MainScene extends Phaser.Scene {
         // --- Physics --- 
         this.physics.add.collider(this.player, this.platforms);
 
-        // --- Continue Platform Generation --- 
-        this.furthestPlatformX = initialGroundX;
-        while (this.furthestPlatformX < gameWidth + this.platformScrollMargin) {
+        // --- Continue Platform Generation (Start further ahead) --- 
+        this.furthestPlatformX = initialGroundX; 
+        // Generate slightly more in create to ensure buffer
+        const initialGenerationEndX = gameWidth + this.platformScrollMargin * 2;
+        while(this.furthestPlatformX < initialGenerationEndX) { 
             const platformY = groundY - (Math.random() * 150);
             this.addPlatform(this.furthestPlatformX + this.platformWidth / 2, platformY);
-            if (Math.random() > 0.3) {
-                this.furthestPlatformX += this.platformWidth;
-            } else {
-                this.furthestPlatformX += this.platformWidth * Phaser.Math.Between(2, 4);
-            }
+            if (Math.random() > 0.3) { 
+                 this.furthestPlatformX += this.platformWidth;
+             } else {
+                 this.furthestPlatformX += this.platformWidth * Phaser.Math.Between(2, 4); 
+             }
         }
 
         // --- Handle attack animation completion --- 
@@ -218,9 +222,15 @@ export class MainScene extends Phaser.Scene {
             this.isPointerDown = false;
             this.touchMoveDirection = 'none';
         });
-        this.cameras.main.startFollow(this.player, true, 0.1, 0);
+        // --- Camera --- 
+        // Follow player, keep them offset to the left
+        const followOffsetX = - (gameWidth / 2) + 100; // Target 100px from left edge
+        this.cameras.main.startFollow(this.player, true, 0.1, 0.1, followOffsetX, 0);
         this.cameras.main.setBounds(0, 0, this.physics.world.bounds.width, gameHeight);
-        this.cameras.main.setDeadzone(gameWidth * 0.2, gameHeight);
+        // Significantly reduce deadzone width so camera moves almost immediately
+        this.cameras.main.setDeadzone(50, gameHeight); 
+
+        // --- Emit Ready Event --- 
         EventBus.emit('current-scene-ready', this);
     }
 
@@ -239,31 +249,52 @@ export class MainScene extends Phaser.Scene {
         return platform;
     }
 
-    // Generate platforms ahead and remove old ones
     generatePlatforms() {
         if (!this.player || !this.platforms) return;
+
         const playerX = this.player.x;
         const cameraScrollX = this.cameras.main.scrollX;
-        while (this.furthestPlatformX < playerX + this.platformScrollMargin + this.scale.width) {
-             const groundY = this.scale.height - this.platformHeight / 2; 
-             const platformY = groundY - (Math.random() * 150);
+        const generationLimitX = this.targetWorldWidth - this.platformWidth; // Ensure space for last platform
+
+        // Generate new platforms ahead of the player, up to the limit
+        while (this.furthestPlatformX < playerX + this.platformScrollMargin + this.scale.width && this.furthestPlatformX < generationLimitX) {
+            const groundY = this.scale.height - this.platformHeight / 2;
+            let platformY = groundY;
+            
+            // Add more variety: occasional higher/lower platforms
+            const randHeight = Math.random();
+            if (randHeight < 0.15) { // 15% chance of higher platform
+                 platformY = groundY - Phaser.Math.Between(100, 250); 
+            } else if (randHeight < 0.25) { // 10% chance of lower platform (careful not to make it too low)
+                 platformY = groundY + Phaser.Math.Between(50, 100);
+            } // Otherwise, keep it near ground level
+
             this.addPlatform(this.furthestPlatformX + this.platformWidth / 2, platformY);
-             if (Math.random() > 0.3) {
-                 this.furthestPlatformX += this.platformWidth;
-             } else {
-                 this.furthestPlatformX += this.platformWidth * Phaser.Math.Between(2, 4);
+
+            // Vary gaps more, limit max gap size
+            if (Math.random() < 0.65) { 
+                 this.furthestPlatformX += this.platformWidth * Phaser.Math.FloatBetween(1.0, 1.5);
+             } else { 
+                 this.furthestPlatformX += this.platformWidth * Phaser.Math.FloatBetween(2.0, 3.5); // Reduced max multiplier
              }
         }
+
+        // --- Remove platforms far behind AND Destroy them ---
+        const platformsToRemove: Phaser.GameObjects.GameObject[] = [];
         this.platforms.children.each((child) => {
             const platform = child as Phaser.Physics.Arcade.Sprite;
-            if (platform.x < cameraScrollX - this.platformKillOffset) {
-                console.log(`Removing platform at x: ${platform.x}`);
-                this.platforms?.killAndHide(platform);
-                if (platform.body) {
-                    platform.body.enable = false; 
-                }
+            // Check if platform is active before considering removal
+            if (platform.active && platform.x < cameraScrollX - this.platformKillOffset) {
+                platformsToRemove.push(platform);
             }
             return null; 
+        });
+
+        platformsToRemove.forEach(platformGameObject => {
+            // Cast to the correct type to access x property
+            const platform = platformGameObject as Phaser.Physics.Arcade.Sprite;
+            console.log(`Destroying platform at x: ${platform.x}`);
+            this.platforms?.remove(platform, true, true); 
         });
     }
 
@@ -271,61 +302,92 @@ export class MainScene extends Phaser.Scene {
         if (!this.cursors || !this.player || !this.platforms || !this.spaceBar || !this.shiftKey) {
             return;
         }
-        const keyboardLeft = this.cursors.left.isDown;
-        const keyboardRight = this.cursors.right.isDown;
+
+        // --- Player Existence Check --- 
+        if (!this.player || !this.player.active) { 
+            // If player is gone for any reason, restart (or go to game over later)
+            console.log("Player inactive or destroyed! Restarting scene.");
+            this.scene.restart();
+            return; // Stop further processing this frame
+        }
+
+        // --- Get Input States --- 
+        // const keyboardLeft = this.cursors.left.isDown; // REMOVE Left input check
+        // const keyboardRight = this.cursors.right.isDown; // REMOVE Right input check
         const keyboardUp = this.cursors.up.isDown;
         const keyboardAttack = Phaser.Input.Keyboard.JustDown(this.spaceBar);
         this.isRunning = this.shiftKey.isDown; 
-        const moveLeft = keyboardLeft || this.touchMoveDirection === 'left';
-        const moveRight = keyboardRight || this.touchMoveDirection === 'right';
+        // const moveLeft = keyboardLeft || this.touchMoveDirection === 'left'; // REMOVE Left input processing
+        // const moveRight = keyboardRight || this.touchMoveDirection === 'right'; // REMOVE Right input processing
         const doJump = keyboardUp || this.touchJump;
         const doAttack = keyboardAttack || this.touchAttack;
         this.touchJump = false;
         this.touchAttack = false;
         const currentSpeed = this.isRunning ? this.runSpeed : this.walkSpeed;
 
-        // --- Attack (Play directly, should exist now) ---
+        // --- Set Player Velocity & Animation --- 
+
+        // Attack (Keep priority)
         if (doAttack && !this.isAttacking && this.player.body?.touching.down) {
             console.log("LOG: Attack conditions met. Playing 'attack'...");
             this.isAttacking = true;
-            this.player.setVelocityX(0);
-            this.player.anims.play('attack', false); // Play the animation defined with individual frames
+            this.player.setVelocityX(0); // Stop horizontal movement during attack
+            this.player.anims.play('attack', false); 
             console.log(`LOG: Called play('attack'). Current anim: ${this.player.anims.currentAnim?.key}`);
         }
 
-        // --- Movement (Unchanged) ---
+        // Auto-Run / Animation (only if not attacking)
         if (!this.isAttacking) {
+            // --- Always move right --- 
+            this.player.setVelocityX(currentSpeed); 
+            this.player.setFlipX(false); // Ensure facing right
+
+            // --- Set animation based on state --- 
             const animKey = this.isRunning ? 'run' : 'walk';
-            if (moveLeft) {
-                this.player.setVelocityX(-currentSpeed);
-                this.player.setFlipX(true);
-                if (this.player.anims.currentAnim?.key !== animKey) {
-                    this.player.anims.play(animKey, true);
-                }
-            } else if (moveRight) {
-                this.player.setVelocityX(currentSpeed);
-                this.player.setFlipX(false);
+            if (this.player.body?.touching.down) { 
+                // Play walk/run animation if on ground
                 if (this.player.anims.currentAnim?.key !== animKey) {
                     this.player.anims.play(animKey, true);
                 }
             } else {
-                this.player.setVelocityX(0);
+                // --- In Air Animation (Optional) --- 
+                // You might want a specific jump/fall animation here
+                // For now, let's just stop walk/run anims if not already stopped
+                // Or maybe keep the last frame of walk/run?
+                // Let's use the idle frame (frame 0) for jump/fall for now.
                 if (this.player.anims.currentAnim?.key !== 'idle') {
-                    this.player.anims.play('idle', true);
+                     this.player.anims.play('idle', true); // Use idle anim while in air
                 }
             }
         }
-        // --- Jump (Unchanged) ---
+
+        // Jump (Keep jump logic, but ensure it doesn't override auto-run X velocity)
         if (doJump && this.player.body?.touching.down && !this.isAttacking) {
             this.player.setVelocityY(this.jumpVelocity);
+            // No longer need to stop X velocity on jump
         }
-        // --- Level Gen, Fall Check, Pointer State (Unchanged) ---
+
+        // --- Level Gen, Fall Check, Pointer State Update ---
         this.generatePlatforms();
-        const bottomThreshold = this.cameras.main.worldView.bottom + 200;
-        if (this.player.y > bottomThreshold) {
-            console.log("Player fell off! Restarting scene.");
-            this.scene.restart();
+
+        // --- Fall Check (More Robust) ---
+        const worldBottomThreshold = this.physics.world.bounds.height - 10; // A little buffer above absolute bottom
+        
+        // Check if player object and its body exist before accessing properties
+        if (this.player && this.player.body) {
+            // Check the player's bottom edge against the world threshold
+            if (this.player.body.bottom > worldBottomThreshold) {
+                console.log(`Player fell off! Y: ${this.player.y.toFixed(2)}, Bottom: ${this.player.body.bottom.toFixed(2)} > Threshold: ${worldBottomThreshold.toFixed(2)}. Game Over.`);
+                this.scene.start('GameOver'); // Go to GameOver scene
+                // No return needed here as scene transition stops current execution
+            }
+        } else if (!this.player) {
+            // Handle case where player might be destroyed unexpectedly
+            console.warn("Player doesn't exist in update fall check! Restarting.");
+            this.scene.restart(); // Fallback restart if player is missing
         }
+
+        // --- Update previous pointer states --- 
         this.pointer2PreviouslyDown = this.input.pointer2?.isDown ?? false;
     }
 } 
