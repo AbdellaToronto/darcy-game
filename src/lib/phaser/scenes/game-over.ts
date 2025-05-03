@@ -19,29 +19,63 @@ export class GameOver extends Phaser.Scene {
 
         // --- Styling (Placeholders - enhance later) ---
         this.cameras.main.setBackgroundColor('#2c1d3b'); // Dark purple/grunge placeholder
-        const titleStyle = { fontSize: '72px', color: '#e43a19', fontStyle: 'bold', fontFamily: 'Impact, sans-serif' };
-        const scoreStyle = { fontSize: '40px', color: '#f0d5a8' };
-        const restartStyle = { fontSize: '32px', color: '#c8b69a' };
+        
+        // Adjust styles to prevent text cutoff
+        const titleStyle = { 
+            fontSize: '64px', // Reduced from 72px
+            color: '#e43a19', 
+            fontStyle: 'bold', 
+            fontFamily: 'Impact, sans-serif',
+            padding: { x: 30, y: 30 }, // Increased padding
+            shadow: { offsetX: 3, offsetY: 3, color: '#000000', blur: 5, stroke: true, fill: true }
+        };
+        
+        const scoreStyle = { 
+            fontSize: '36px', // Reduced from 40px
+            color: '#f0d5a8',
+            padding: { x: 25, y: 20 }, // Increased padding
+            shadow: { offsetX: 2, offsetY: 2, color: '#000000', blur: 2, stroke: true, fill: true }
+        };
+        
+        const restartStyle = { 
+            fontSize: '30px', // Reduced from 32px
+            color: '#c8b69a',
+            padding: { x: 25, y: 20 }, // Increased padding
+            shadow: { offsetX: 2, offsetY: 2, color: '#000000', blur: 2, stroke: true, fill: true }
+        };
 
-        // --- Text Elements ---
+        // Create a container for better positioning
+        const container = this.add.container(width / 2, height / 2);
+        container.setSize(width * 0.8, height * 0.8); // Container smaller than screen
+        
+        // --- Text Elements within container (adjust spacing) ---
         // Game Over Title (Grunge vibe)
-        this.add.text(width / 2, height * 0.3, 'YOU WIPED OUT!', titleStyle)
+        const titleText = this.add.text(0, -height * 0.25, 'YOU WIPED OUT!', titleStyle)
             .setOrigin(0.5)
             .setShadow(3, 3, '#000000', 5);
-
+        
         // Final Score
-        this.add.text(width / 2, height * 0.5, `Final Score: ${this.finalScore}`, scoreStyle)
+        const scoreText = this.add.text(0, 0, `Final Score: ${this.finalScore}`, scoreStyle)
             .setOrigin(0.5);
-
-        // Restart Text (Just display it, no interaction needed on the text itself)
-        this.add.text(width / 2, height * 0.7, 'Tap Stage to Retry', restartStyle)
+        
+        // Restart Text
+        const restartText = this.add.text(0, height * 0.25, 'Tap Stage to Retry', restartStyle)
             .setOrigin(0.5);
+        
+        // Add all elements to container for unified positioning
+        container.add([titleText, scoreText, restartText]);
 
         // Make entire screen interactive for restart
         this.input.on('pointerdown', () => {
             console.log("Restarting MainScene from GameOver...");
-             // Reset any relevant game state if needed before restarting
-             // For example, if using a global state manager.
+            
+            // Reset game state in data manager
+            const mainScene = this.scene.get('MainScene');
+            
+            // Clear any persistent data to ensure a fresh start
+            mainScene.data.set('currentLives', 3); // Reset to default lives
+            mainScene.data.set('currentScore', 0); // Reset score to 0
+            
             this.scene.start('MainScene');
         });
     }

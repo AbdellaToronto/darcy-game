@@ -17,6 +17,16 @@ export class MainScene extends Phaser.Scene {
     private platformWidth = 300;
     private platformHeight = 32;
     private targetWorldWidth = 20000; // Target width for ~1 min run
+    private playerCollisionWidth = 0; // Store player collision width for platform gap calculation
+    private lastPlayerX = 0; // Track player position for scoring
+    private scoringTimer = 0; // Timer for scoring when blocked
+    private scoringInterval = 500; // Decrement score every 500ms when blocked
+    private maxGapMultiplier = 2.0; // Maximum gap between platforms as a multiplier of platform width
+
+    // --- New Time Management ---
+    private gameTimeLeft = 60000; // 60 seconds in milliseconds
+    private timerText?: Phaser.GameObjects.Text;
+    private gameStartTime = 0;
 
     // Keep game objects and state
     private player?: Phaser.Physics.Arcade.Sprite;
@@ -46,6 +56,7 @@ export class MainScene extends Phaser.Scene {
     private startTime = 0; 
     private scoreText?: Phaser.GameObjects.Text;
     private livesText?: Phaser.GameObjects.Text;
+    private playerCharacterHeight = 0; // Store for platform height calculations
 
     constructor() {
         super({ key: 'MainScene' });
@@ -82,13 +93,17 @@ export class MainScene extends Phaser.Scene {
         const gameWidth = this.scale.width;
         const gameHeight = this.scale.height;
 
-        // --- Retrieve lives from data manager, default to 3 on first run ---
+        // --- Retrieve lives and score from data manager ---
         this.lives = this.data.get('currentLives') ?? 3;
+        this.score = this.data.get('currentScore') ?? 0; // Retrieve persisted score or start at 0
         this.data.reset(); // Optional: Clear data manager after retrieving if not needed elsewhere
-        console.log(`CREATE - Retrieved/Set this.lives to: ${this.lives}`);
+        console.log(`CREATE - Retrieved/Set this.lives to: ${this.lives}, this.score to: ${this.score}`);
+
+        // Initialize time management
+        this.gameStartTime = this.time.now;
+        this.gameTimeLeft = 60000; // Reset to full time
 
         // Initialize other state
-        this.score = 0; // Reset score on create
         this.startTime = this.time.now;
         this.isAttacking = false; 
         this.isRunning = false; 
@@ -133,6 +148,7 @@ export class MainScene extends Phaser.Scene {
         // Access height directly from the base image frame
         const playerUnscaledHeight = idleFrameTexture.getSourceImage().height ?? 355; 
         const playerScaledHeight = playerUnscaledHeight * 0.5;
+        this.playerCharacterHeight = playerScaledHeight; // Store for platform generation
         const playerStartY = groundY - this.platformHeight / 2 - playerScaledHeight / 2 - 2;
         console.log(`Ground Y: ${groundY}, Player Start Y: ${playerStartY}, Scaled Height: ${playerScaledHeight}`);
 
@@ -148,10 +164,15 @@ export class MainScene extends Phaser.Scene {
         if (this.player.body) {
             this.player.body.setSize(); // Reset to scaled frame dimensions
             this.player.body.setOffset(0, 0); // Reset offset
+            this.playerCollisionWidth = this.player.body.width; // Store for platform generation
             console.log(`Body size after scale and reset: ${this.player.body.width}x${this.player.body.height}`);
         } else {
             console.warn("Player body not available immediately after creation!");
         }
+
+        // Initialize the last player position
+        this.lastPlayerX = this.playerStartX;
+        this.scoringTimer = this.time.now;
 
         // --- Platforms & Initial Ground --- 
         this.platforms = this.physics.add.group({
@@ -190,6 +211,19 @@ export class MainScene extends Phaser.Scene {
         this.livesText = this.add.text(this.scale.width - 16, 16, `Lives: ${this.lives}`, textStyle)
             .setOrigin(1, 0) // Align to top-right
             .setScrollFactor(0); // Fix text to camera
+        
+        // --- Timer Text (Top-Center) ---
+        const timerStyle = { 
+            fontSize: '28px', 
+            color: '#FF0000', 
+            fontStyle: 'bold', 
+            stroke: '#000000', 
+            strokeThickness: 4,
+            shadow: { offsetX: 2, offsetY: 2, color: '#000000', blur: 2, stroke: true, fill: true }
+        };
+        this.timerText = this.add.text(this.scale.width / 2, 16, `1:00`, timerStyle)
+            .setOrigin(0.5, 0) // Center-top alignment
+            .setScrollFactor(0); // Fix to camera
 
         // --- Handle attack animation completion --- 
         if (this.player) {
@@ -286,28 +320,58 @@ export class MainScene extends Phaser.Scene {
         const playerX = this.player.x;
         const cameraScrollX = this.cameras.main.scrollX;
         const generationLimitX = this.targetWorldWidth - this.platformWidth; // Ensure space for last platform
+        const groundY = this.scale.height - this.platformHeight / 2;
+        
+        // Store the last platform's Y position for smoother transitions
+        let lastPlatformY = groundY;
 
         // Generate new platforms ahead of the player, up to the limit
         while (this.furthestPlatformX < playerX + this.platformScrollMargin + this.scale.width && this.furthestPlatformX < generationLimitX) {
-            const groundY = this.scale.height - this.platformHeight / 2;
             let platformY = groundY;
             
-            // Add more variety: occasional higher/lower platforms
+            // Calculate maximum height difference as 60% of character height
+            const maxHeightDelta = this.playerCharacterHeight * 0.6;
+            
+            // Add more variety: occasional higher platforms, never lower than ground level
             const randHeight = Math.random();
-            if (randHeight < 0.15) { // 15% chance of higher platform
-                 platformY = groundY - Phaser.Math.Between(100, 250); 
-            } else if (randHeight < 0.25) { // 10% chance of lower platform (careful not to make it too low)
-                 platformY = groundY + Phaser.Math.Between(50, 100);
-            } // Otherwise, keep it near ground level
-
+            if (randHeight < 0.3) { // 30% chance of higher platform
+                // Ensure new platforms are never too far from the last one (smooth transition)
+                const minHeight = Math.max(groundY - 250, lastPlatformY - maxHeightDelta);
+                const maxHeight = Math.max(groundY - 100, lastPlatformY - 50);
+                platformY = Phaser.Math.Between(minHeight, maxHeight);
+            }
+            
+            // Never spawn platforms below ground level
+            platformY = Math.min(platformY, groundY);
+            
             this.addPlatform(this.furthestPlatformX + this.platformWidth / 2, platformY);
+            lastPlatformY = platformY; // Update the last platform Y
 
-            // Vary gaps more, limit max gap size
+            // Calculate minimum gap based on player collision width
+            // Ensure gap is at least 1.5x the player's collision width
+            const minGap = this.playerCollisionWidth * 1.5;
+            const minGapMultiplier = Math.max(1.2, minGap / this.platformWidth);
+            
+            // Calculate a platform-width-based maximum gap
+            // No more than 2 platform widths regardless of other factors
+            const absoluteMaxGapMultiplier = this.maxGapMultiplier;
+            
+            // Vary gaps, ensuring minimum and maximum gap requirements are met
             if (Math.random() < 0.65) { 
-                 this.furthestPlatformX += this.platformWidth * Phaser.Math.FloatBetween(1.0, 1.5);
-             } else { 
-                 this.furthestPlatformX += this.platformWidth * Phaser.Math.FloatBetween(2.0, 3.5); // Reduced max multiplier
-             }
+                // Smaller gaps, but still respect minimum
+                const gapMultiplier = Phaser.Math.FloatBetween(
+                    minGapMultiplier, // Use calculated minimum
+                    Math.min(minGapMultiplier + 0.5, absoluteMaxGapMultiplier) // Cap at max
+                );
+                this.furthestPlatformX += this.platformWidth * gapMultiplier;
+            } else { 
+                // Larger gaps, but still respect maximum
+                const gapMultiplier = Phaser.Math.FloatBetween(
+                    Math.min(minGapMultiplier + 0.3, absoluteMaxGapMultiplier - 0.1), // Don't go too close to max
+                    absoluteMaxGapMultiplier // Cap at absolute maximum
+                );
+                this.furthestPlatformX += this.platformWidth * gapMultiplier;
+            }
         }
 
         // --- Remove platforms far behind AND Destroy them ---
@@ -336,15 +400,67 @@ export class MainScene extends Phaser.Scene {
             this.handleGameOver(); // Use new handler
             return; 
         }
-        if (!this.cursors || !this.player.body || !this.platforms || !this.spaceBar || !this.shiftKey || !this.scoreText || !this.livesText) {
+        if (!this.cursors || !this.player.body || !this.platforms || !this.spaceBar || 
+            !this.shiftKey || !this.scoreText || !this.livesText || !this.timerText) {
             return; // Wait for all elements including UI text
         }
 
-        // --- Update Score --- 
-        // Simple time-based score for now
-        const elapsedSeconds = Math.floor((this.time.now - this.startTime) / 1000);
-        this.score = elapsedSeconds * 10; // e.g., 10 points per second
-        this.scoreText.setText(`Score: ${this.score}`);
+        // --- Update countdown timer ---
+        const elapsedTime = this.time.now - this.gameStartTime;
+        this.gameTimeLeft = Math.max(0, 60000 - elapsedTime);
+        
+        const secondsLeft = Math.ceil(this.gameTimeLeft / 1000);
+        const minutes = Math.floor(secondsLeft / 60);
+        const seconds = secondsLeft % 60;
+        
+        // Format time as M:SS
+        const timeString = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+        this.timerText.setText(timeString);
+        
+        // Make timer text pulse red when time is running low (less than 15 seconds)
+        if (secondsLeft <= 15) {
+            const pulseFactor = 0.5 + Math.abs(Math.sin(this.time.now / 200)) * 0.5;
+            this.timerText.setScale(pulseFactor);
+            this.timerText.setColor('#FF0000');
+        } else {
+            this.timerText.setScale(1);
+            this.timerText.setColor('#FFFFFF');
+        }
+        
+        // Check for time-out game over
+        if (this.gameTimeLeft <= 0) {
+            console.log("TIME'S UP! Game Over!");
+            this.handleGameOver();
+            return;
+        }
+
+        // --- Update Score based on player progress --- 
+        if (this.player && this.player.active && this.scoreText) {
+            const currentPlayerX = this.player.x;
+            const playerMakingProgress = currentPlayerX > this.lastPlayerX + 1; // +1 to ensure meaningful progress
+            
+            const currentTime = this.time.now;
+            
+            if (playerMakingProgress) {
+                // Player is making forward progress - increase score
+                this.score += 1;
+                // Reset the scoring timer when making progress
+                this.scoringTimer = currentTime;
+            } else {
+                // Player is not making progress - decrease score after delay
+                if (currentTime - this.scoringTimer > this.scoringInterval) {
+                    // Decrement score if player is stuck/not moving forward
+                    this.score = Math.max(0, this.score - 3); // Decrease faster than increase, min 0
+                    this.scoringTimer = currentTime; // Reset timer
+                }
+            }
+            
+            // Update the score display
+            this.scoreText.setText(`Score: ${this.score}`);
+            
+            // Update last position for next frame comparison
+            this.lastPlayerX = currentPlayerX;
+        }
 
         // --- Input States --- 
         const keyboardUp = this.cursors.up.isDown;
@@ -408,9 +524,10 @@ export class MainScene extends Phaser.Scene {
             console.log("LOSE LIFE - Calling handleGameOver()");
             this.handleGameOver();
         } else {
-            // --- Store lives in data manager before restart ---
-            console.log(`LOSE LIFE - Storing lives: ${this.lives} in data manager and restarting.`);
+            // --- Store lives and score in data manager before restart ---
+            console.log(`LOSE LIFE - Storing lives: ${this.lives} and score: ${this.score} in data manager and restarting.`);
             this.data.set('currentLives', this.lives);
+            this.data.set('currentScore', this.score);
             this.scene.restart(); // No need to pass data object now
         }
     }
