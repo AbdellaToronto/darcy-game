@@ -1,6 +1,8 @@
 import * as Phaser from 'phaser';
 import { MainScene } from '@/lib/phaser/scenes/main-scene';
 import { GameOver } from '@/lib/phaser/scenes/game-over';
+import { WinScene } from '@/lib/phaser/scenes/win-scene';
+import { SplashScene } from '@/lib/phaser/scenes/splash-scene';
 
 const gameWidth = 800; // Keep track of base width
 const gameHeight = 600; // Keep track of base height
@@ -20,9 +22,11 @@ const config: Phaser.Types.Core.GameConfig = {
         }
     },
     scene: [
-        // Add other scenes like Boot, Preloader here if needed
+        // Add splash screen as the first scene
+        SplashScene,
         MainScene,
-        GameOver
+        GameOver,
+        WinScene
     ],
     scale: {
         mode: Phaser.Scale.RESIZE,

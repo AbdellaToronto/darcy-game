@@ -29,6 +29,21 @@ export class MainScene extends Phaser.Scene {
     private gameStartTime = 0;
     private maxDistanceReached = 0; // Track maximum distance for final scoring
 
+    // --- Audio Management ---
+    private backgroundMusic?: Phaser.Sound.BaseSound;
+    private powerupMusic?: Phaser.Sound.BaseSound;
+
+    // --- Powerup Management ---
+    private powerups?: Phaser.Physics.Arcade.Group;
+    private powerupSpawnChance = 0.2; // 20% chance per platform section
+    private isPoweredUp = false;
+    private powerupDuration = 15000; // 15 seconds in milliseconds
+    private powerupTimer = 0;
+    private normalRunSpeed = 350; // Store original run speed
+    private powerupRunSpeed = 437; // 1.25x normal run speed
+    private powerupScoreMultiplier = 2; // 2x points during powerup
+    private powerupIndicator?: Phaser.GameObjects.Text; // Visual indicator for powerup status
+
     // --- Obstacle Management ---
     private obstacles?: Phaser.Physics.Arcade.Group;
     private obstacleSpawnChance = 0.5; // Increased from 0.3 to 0.5 (50% chance per platform)
@@ -90,8 +105,15 @@ export class MainScene extends Phaser.Scene {
             }
         }
 
+        // --- Load Audio Files ---
+        this.load.audio('background-music', '/assets/chiptune-1.mp3');
+        this.load.audio('powerup-music', '/assets/mighty-real.mp3');
+
         // Load goose obstacle image
         this.load.image('obstacle', '/assets/goose.png');
+        
+        // Load powerup image or create a placeholder
+        this.load.image('powerup', '/assets/powerup.png');
         
         // Load background assets
         // Create star background if it doesn't exist
@@ -196,19 +218,37 @@ export class MainScene extends Phaser.Scene {
             .setOrigin(0, 0)
             .setScrollFactor(0, 0); // Fixed to camera
         
-        // --- Retrieve lives and score from data manager ---
+        // --- Retrieve game state from data manager ---
         this.lives = this.data.get('currentLives') ?? 3;
         this.score = this.data.get('currentScore') ?? 0;
-        
-        // Only initialize time if not already set (persist between lives)
         this.gameTimeLeft = this.data.get('timeLeft') ?? 60000;
         this.maxDistanceReached = this.data.get('maxDistance') ?? 0;
-        
+        this.isPoweredUp = false; // Always reset powerup status on scene create
+        this.powerupTimer = 0;
+
         this.data.reset(); // Clear data manager after retrieving
         console.log(`CREATE - Retrieved/Set lives: ${this.lives}, score: ${this.score}, time: ${this.gameTimeLeft}`);
 
         // Initialize time tracking - use current time for countdown
         this.gameStartTime = this.time.now;
+
+        // --- Initialize Audio ---
+        this.backgroundMusic = this.sound.add('background-music', { 
+            loop: true,
+            volume: 0.5
+        });
+        this.powerupMusic = this.sound.add('powerup-music', {
+            loop: true,
+            volume: 0.7
+        });
+
+        // Start background music if not already playing
+        if (this.sound.get('background-music')?.isPlaying) {
+            console.log("Background music already playing");
+        } else {
+            console.log("Starting background music");
+            this.backgroundMusic.play();
+        }
 
         // Initialize other state
         this.startTime = this.time.now;
@@ -293,6 +333,11 @@ export class MainScene extends Phaser.Scene {
             immovable: true
         });
         
+        // --- Powerups ---
+        this.powerups = this.physics.add.group({
+            allowGravity: false,
+        });
+        
         let initialGroundX = 0;
         while (initialGroundX < gameWidth * 2) { 
             this.addPlatform(initialGroundX + this.platformWidth / 2, groundY);
@@ -311,6 +356,18 @@ export class MainScene extends Phaser.Scene {
                 obstacle as Phaser.Physics.Arcade.Sprite
             ),
             undefined, 
+            this
+        );
+        
+        // Add overlap for powerup collection
+        this.physics.add.overlap(
+            this.player,
+            this.powerups,
+            (player, powerup) => this.collectPowerup(
+                player as Phaser.Physics.Arcade.Sprite,
+                powerup as Phaser.Physics.Arcade.Sprite
+            ),
+            undefined,
             this
         );
 
@@ -350,6 +407,20 @@ export class MainScene extends Phaser.Scene {
         this.timerText = this.add.text(this.scale.width / 2, 41, `1:00`, timerStyle) // Moved down by 25px
             .setOrigin(0.5, 0) // Center-top alignment
             .setScrollFactor(0); // Fix to camera
+        
+        // --- Powerup Indicator ---
+        const powerupStyle = { 
+            fontSize: '24px', 
+            color: '#FFFF00', 
+            fontStyle: 'bold', 
+            stroke: '#000000', 
+            strokeThickness: 3,
+            shadow: { offsetX: 1, offsetY: 1, color: '#000000', blur: 1, stroke: true, fill: true }
+        };
+        this.powerupIndicator = this.add.text(this.scale.width / 2, 75, '', powerupStyle)
+            .setOrigin(0.5, 0)
+            .setScrollFactor(0)
+            .setVisible(false);
 
         // --- Handle attack animation completion --- 
         if (this.player) {
@@ -465,6 +536,25 @@ export class MainScene extends Phaser.Scene {
                     
                 this.addObstacle(x, obstacleY - floatingHeight);
             }
+            
+            // Randomly spawn a powerup (with lower chance than obstacles)
+            if (!this.isPoweredUp && this.powerups && x > this.scale.width * 2 && Math.random() < this.powerupSpawnChance) {
+                // Lower powerup position to be reachable by jumps
+                // Position them 40% from the bottom of the screen
+                const screenBottom = this.scale.height;
+                const powerupYPosition = screenBottom * 0.6; // 40% from bottom
+                
+                // Add some variance, but keep them jumpable
+                const variance = this.playerCharacterHeight; // Use player height for appropriate variance
+                const powerupY = powerupYPosition - Phaser.Math.Between(0, variance);
+                
+                // Ensure powerups are always above platforms by a jumpable amount
+                const minJumpableHeight = 50; // Minimum height above platforms
+                const platformTopY = y - this.platformHeight/2;
+                const finalPowerupY = Math.min(powerupY, platformTopY - minJumpableHeight);
+                
+                this.addPowerup(x, finalPowerupY);
+            }
         }
         return platform;
     }
@@ -512,31 +602,202 @@ export class MainScene extends Phaser.Scene {
         return obstacle;
     }
 
+    // New method to add a powerup
+    addPowerup(x: number, y: number) {
+        if (!this.powerups) return;
+        
+        const powerup = this.powerups.get(x, y, 'powerup') as Phaser.Physics.Arcade.Sprite | undefined;
+        if (powerup) {
+            powerup.setActive(true);
+            powerup.setVisible(true);
+            powerup.setOrigin(0.5, 0.5);
+            
+            // Set scale and enable physics
+            powerup.setScale(0.7);
+            
+            if (powerup.body) {
+                powerup.body.enable = true;
+            }
+            
+            // Add floating animation
+            this.tweens.add({
+                targets: powerup,
+                y: y - 20,
+                duration: 1500,
+                ease: 'Sine.easeInOut',
+                yoyo: true,
+                repeat: -1,
+                angle: { from: -10, to: 10, duration: 1200, yoyo: true, repeat: -1 }
+            });
+            
+            // Add glow effect
+            this.tweens.add({
+                targets: powerup,
+                alpha: 0.7,
+                duration: 800,
+                ease: 'Sine.easeInOut',
+                yoyo: true,
+                repeat: -1
+            });
+        }
+        return powerup;
+    }
+
+    // Method to handle powerup collection
+    collectPowerup(player: Phaser.Physics.Arcade.Sprite, powerup: Phaser.Physics.Arcade.Sprite) {
+        // Deactivate the powerup sprite
+        powerup.setActive(false);
+        powerup.setVisible(false);
+        
+        // Stop any tweens on the powerup
+        this.tweens.killTweensOf(powerup);
+        
+        // Play collection effect
+        const particles = this.add.particles(powerup.x, powerup.y, 'powerup', {
+            speed: { min: 50, max: 150 },
+            scale: { start: 0.5, end: 0 },
+            quantity: 15,
+            lifespan: 800,
+            emitting: false
+        });
+        particles.explode();
+        
+        // Clean up particles after explosion
+        this.time.delayedCall(1000, () => {
+            particles.destroy();
+        });
+        
+        // Start powerup state
+        this.activatePowerup();
+        
+        // Destroy the powerup
+        powerup.destroy();
+    }
+
+    // Method to activate powerup state
+    activatePowerup() {
+        console.log("POWERUP ACTIVATED!");
+        
+        // Switch audio
+        if (this.backgroundMusic && this.powerupMusic) {
+            this.backgroundMusic.pause();
+            this.powerupMusic.play();
+        }
+        
+        // Set powerup state
+        this.isPoweredUp = true;
+        this.powerupTimer = this.time.now;
+        
+        // Update visual indicator
+        if (this.powerupIndicator) {
+            this.powerupIndicator.setText("SUPERSTAR MODE!");
+            this.powerupIndicator.setVisible(true);
+            
+            // Add pulsing effect to the indicator
+            this.tweens.add({
+                targets: this.powerupIndicator,
+                scale: { from: 1, to: 1.2 },
+                duration: 500,
+                ease: 'Sine.easeInOut',
+                yoyo: true,
+                repeat: -1
+            });
+        }
+        
+        // Boost the player visually
+        if (this.player) {
+            this.tweens.add({
+                targets: this.player,
+                alpha: 0.85,
+                duration: 200,
+                ease: 'Sine.easeInOut',
+                yoyo: true,
+                repeat: -1
+            });
+        }
+    }
+
+    // Method to deactivate powerup state
+    deactivatePowerup() {
+        console.log("POWERUP DEACTIVATED");
+        
+        // Switch audio back
+        if (this.backgroundMusic && this.powerupMusic) {
+            this.powerupMusic.stop();
+            this.backgroundMusic.resume();
+        }
+        
+        // Reset powerup state
+        this.isPoweredUp = false;
+        
+        // Update visual indicator
+        if (this.powerupIndicator) {
+            this.powerupIndicator.setVisible(false);
+            this.tweens.killTweensOf(this.powerupIndicator);
+        }
+        
+        // Reset player visual effects
+        if (this.player) {
+            this.tweens.killTweensOf(this.player);
+            this.player.setAlpha(1);
+        }
+    }
+
     // Collision handler for obstacles
     handleObstacleCollision(player: Phaser.Physics.Arcade.Sprite, obstacle: Phaser.Physics.Arcade.Sprite) {
-        // Only handle collision if the player is not attacking and the obstacle hasn't been attacked
+        // If powered up, immediately destroy obstacles
+        if (this.isPoweredUp) {
+            // If not already attacked, award points
+            if (!obstacle.getData('attacked')) {
+                // Mark as attacked
+                obstacle.setData('attacked', true);
+                
+                // Add bonus points (with powerup multiplier)
+                const pointsAwarded = this.obstacleKillBonus * this.powerupScoreMultiplier;
+                this.score += pointsAwarded;
+                
+                // Show floating score text with bonus indicator
+                this.showFloatingScore(obstacle.x, obstacle.y, `+${pointsAwarded} (${this.powerupScoreMultiplier}x)`);
+                
+                // Immediately disable collision
+                if (obstacle.body) {
+                    obstacle.body.enable = false;
+                }
+                
+                // Play defeat animation
+                this.defeatObstacle(obstacle);
+            }
+            return;
+        }
+        
+        // Normal collision handling for non-powerup state
         if (!this.isAttacking && !obstacle.getData('attacked')) {
             // Set flag that player is blocked by obstacle for scoring
             this.isBlockedByObstacle = true;
-        } else if (this.isAttacking && !obstacle.getData('attacked')) {
-            // If player is attacking and obstacle hasn't been attacked yet
+        } else if (this.isAttacking) {
+            // If player is attacking, handle the attack regardless of previous attack state
             
-            // Mark as attacked
-            obstacle.setData('attacked', true);
-            
-            // Add points
-            this.score += this.obstacleKillBonus;
-            
-            // Show floating score text
-            this.showFloatingScore(obstacle.x, obstacle.y, `+${this.obstacleKillBonus}`);
+            // If not already attacked, award points
+            if (!obstacle.getData('attacked')) {
+                // Mark as attacked
+                obstacle.setData('attacked', true);
+                
+                // Add points
+                this.score += this.obstacleKillBonus;
+                
+                // Show floating score text
+                this.showFloatingScore(obstacle.x, obstacle.y, `+${this.obstacleKillBonus}`);
+            }
             
             // Immediately disable collision on the obstacle
             if (obstacle.body) {
                 obstacle.body.enable = false;
             }
             
-            // Play defeat animation
-            this.defeatObstacle(obstacle);
+            // Play defeat animation if not already defeated
+            if (obstacle.active && obstacle.visible) {
+                this.defeatObstacle(obstacle);
+            }
             
             // No longer blocked
             this.isBlockedByObstacle = false;
@@ -712,6 +973,22 @@ export class MainScene extends Phaser.Scene {
             this.timerText.setColor('#FFFFFF');
         }
         
+        // --- Update Powerup Status ---
+        if (this.isPoweredUp) {
+            const powerupElapsed = this.time.now - this.powerupTimer;
+            const powerupSecondsLeft = Math.ceil((this.powerupDuration - powerupElapsed) / 1000);
+            
+            // Update powerup indicator
+            if (this.powerupIndicator) {
+                this.powerupIndicator.setText(`SUPERSTAR MODE! ${powerupSecondsLeft}s`);
+            }
+            
+            // Check if powerup has expired
+            if (powerupElapsed >= this.powerupDuration) {
+                this.deactivatePowerup();
+            }
+        }
+        
         // Update max distance reached for scoring
         if (this.player.x > this.maxDistanceReached) {
             this.maxDistanceReached = this.player.x;
@@ -759,12 +1036,20 @@ export class MainScene extends Phaser.Scene {
         // --- Input States --- 
         const keyboardUp = this.cursors.up.isDown;
         const keyboardAttack = Phaser.Input.Keyboard.JustDown(this.spaceBar);
-        this.isRunning = this.shiftKey.isDown; 
+        // During powerup, force running
+        this.isRunning = this.isPoweredUp || this.shiftKey.isDown; 
         const doJump = keyboardUp || this.touchJump;
         const doAttack = keyboardAttack || this.touchAttack;
         this.touchJump = false;
         this.touchAttack = false;
-        const currentSpeed = this.isRunning ? this.runSpeed : this.walkSpeed;
+        
+        // Set current speed based on powerup state
+        let currentSpeed;
+        if (this.isPoweredUp) {
+            currentSpeed = this.powerupRunSpeed;
+        } else {
+            currentSpeed = this.isRunning ? this.normalRunSpeed : this.walkSpeed;
+        }
         
         // --- Attack handling (updated to include obstacle checking) ---
         if (doAttack && !this.isAttacking) {
@@ -778,6 +1063,7 @@ export class MainScene extends Phaser.Scene {
             // Check for nearby obstacles to destroy
             this.checkAttackNearbyObstacles();
         }
+        
         if (!this.isAttacking) {
             this.player.setVelocityX(currentSpeed);
             this.player.setFlipX(false);
@@ -792,9 +1078,11 @@ export class MainScene extends Phaser.Scene {
                 }
             }
         }
+        
         if (doJump && this.player.body?.touching.down && !this.isAttacking) {
             this.player.setVelocityY(this.jumpVelocity);
         }
+        
         this.generatePlatforms();
         
         // --- Fall Check / Lose Life --- 
@@ -809,6 +1097,9 @@ export class MainScene extends Phaser.Scene {
         
         // Remove obstacles that are far behind
         this.cleanupObstacles();
+        
+        // Clean up powerups that are far behind
+        this.cleanupPowerups();
 
         // Update parallax background
         if (this.backgroundStars && this.midgroundBuildings && this.foregroundCity && this.player) {
@@ -825,6 +1116,11 @@ export class MainScene extends Phaser.Scene {
     // --- Method: Lose Life / Game Over Check ---
     loseLife() {
         if (!this.player || !this.livesText) return;
+        
+        // End powerup state if active
+        if (this.isPoweredUp) {
+            this.deactivatePowerup();
+        }
         
         const livesBefore = this.lives;
         this.lives--;
@@ -852,6 +1148,14 @@ export class MainScene extends Phaser.Scene {
     handleGameOver() {
         console.log(`Game Over! Final Score: ${this.score}`);
         
+        // Make sure all music is stopped when game over
+        if (this.backgroundMusic) {
+            this.backgroundMusic.stop();
+        }
+        if (this.powerupMusic) {
+            this.powerupMusic.stop();
+        }
+        
         // Calculate final score components
         const baseScore = this.score;
         const distanceScore = Math.floor(this.maxDistanceReached / 100); // 1 point per 100 units traveled
@@ -859,10 +1163,12 @@ export class MainScene extends Phaser.Scene {
         const finalScore = baseScore + distanceScore + lifeBonus;
         
         // Check if player "won" by getting to work on time (score >= 5000)
+        // Time's up is not necessarily a loss - check if they accumulated enough points
         const gameWon = finalScore >= 5000;
         
         // Pass data to appropriate end scene
         if (gameWon) {
+            console.log(`Win condition met with score: ${finalScore}. Starting WinScene...`);
             this.scene.start('WinScene', { 
                 finalScore: finalScore,
                 baseScore: baseScore,
@@ -870,6 +1176,7 @@ export class MainScene extends Phaser.Scene {
                 lifeBonus: lifeBonus
             });
         } else {
+            console.log(`Loss condition with score: ${finalScore}. Starting GameOver scene...`);
             this.scene.start('GameOver', { 
                 finalScore: finalScore,
                 baseScore: baseScore,
@@ -884,23 +1191,45 @@ export class MainScene extends Phaser.Scene {
         if (!this.player || !this.obstacles) return;
         
         // Calculate attack range in front of player
-        const attackRange = this.playerCollisionWidth * 1.5;
+        const attackRange = this.playerCollisionWidth * 2.5; // Increased range for better detection
         const playerX = this.player.x;
         const playerY = this.player.y;
+        
+        console.log(`Checking for obstacles in attack range: ${attackRange}`);
         
         // Get all obstacles within range
         this.obstacles.getChildren().forEach(child => {
             const obstacle = child as Phaser.Physics.Arcade.Sprite;
+            
+            // Skip if already attacked
+            if (obstacle.getData('attacked')) return;
             
             // Check if obstacle is within attack range
             const dx = obstacle.x - playerX;
             const dy = obstacle.y - playerY;
             const distance = Math.sqrt(dx * dx + dy * dy);
             
+            console.log(`Obstacle at distance: ${distance}. Attacked: ${obstacle.getData('attacked')}`);
+            
             if (distance < attackRange) {
-                // Mark as attacked (will be destroyed on next collision)
+                console.log(`Attacked obstacle at distance: ${distance}`);
+                
+                // Mark as attacked
                 obstacle.setData('attacked', true);
-                obstacle.setTint(0x555555);
+                
+                // Add points
+                this.score += this.obstacleKillBonus;
+                
+                // Show floating score text
+                this.showFloatingScore(obstacle.x, obstacle.y, `+${this.obstacleKillBonus}`);
+                
+                // Immediately disable collision on the obstacle
+                if (obstacle.body) {
+                    obstacle.body.enable = false;
+                }
+                
+                // Play defeat animation
+                this.defeatObstacle(obstacle);
             }
         });
     }
@@ -924,8 +1253,35 @@ export class MainScene extends Phaser.Scene {
         });
     }
 
-    // Override destroy to clean up any active tweens
+    // Method to clean up powerups that are far behind the player
+    cleanupPowerups() {
+        if (!this.player || !this.powerups) return;
+        
+        const cameraScrollX = this.cameras.main.scrollX;
+        const powerupsToRemove: Phaser.GameObjects.GameObject[] = [];
+        
+        this.powerups.getChildren().forEach(child => {
+            const powerup = child as Phaser.Physics.Arcade.Sprite;
+            if (powerup.active && powerup.x < cameraScrollX - this.platformKillOffset) {
+                powerupsToRemove.push(powerup);
+            }
+        });
+        
+        powerupsToRemove.forEach(powerup => {
+            this.powerups?.remove(powerup, true, true);
+        });
+    }
+
+    // Override destroy to clean up resources when scene exits
     shutdown() {
+        // Stop all music
+        if (this.backgroundMusic) {
+            this.backgroundMusic.stop();
+        }
+        if (this.powerupMusic) {
+            this.powerupMusic.stop();
+        }
+        
         // Clean up all score popups
         this.scorePopups.forEach(popup => {
             popup.destroy();

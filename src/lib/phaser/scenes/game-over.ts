@@ -67,7 +67,7 @@ export class GameOver extends Phaser.Scene {
         
         // --- Text Elements ---
         // Game Over Title
-        const titleText = this.add.text(0, -height * 0.25, 'YOU WIPED OUT!', titleStyle)
+        const titleText = this.add.text(0, -height * 0.25, 'NIGHT RUINED!', titleStyle)
             .setOrigin(0.5)
             .setShadow(3, 3, '#000000', 5);
         
@@ -76,21 +76,29 @@ export class GameOver extends Phaser.Scene {
             .setOrigin(0.5);
         
         // Score breakdown
-        const baseScoreText = this.add.text(0, -height * 0.02, `Base Score: ${this.baseScore}`, detailStyle)
+        const baseScoreText = this.add.text(0, -height * 0.02, `Bartending Skills: ${this.baseScore}`, detailStyle)
             .setOrigin(0.5);
         
-        const distanceText = this.add.text(0, height * 0.05, `Distance Bonus: ${this.distanceScore}`, detailStyle)
+        const distanceText = this.add.text(0, height * 0.05, `Travel Bonus: ${this.distanceScore}`, detailStyle)
             .setOrigin(0.5);
         
-        const lifeBonusText = this.add.text(0, height * 0.12, `Life Bonus: ${this.lifeBonus}`, detailStyle)
+        const lifeBonusText = this.add.text(0, height * 0.12, `Style Points: ${this.lifeBonus}`, detailStyle)
             .setOrigin(0.5);
+        
+        // Add message about being late
+        const lateMessage = this.add.text(0, height * 0.19, "You didn't make it to work on time!", {
+            fontSize: '20px',
+            color: '#FF6666',
+            fontStyle: 'italic',
+            padding: { x: 15, y: 8 }
+        }).setOrigin(0.5);
         
         // Restart Text
-        const restartText = this.add.text(0, height * 0.25, 'Tap Stage to Retry', restartStyle)
+        const restartText = this.add.text(0, height * 0.3, 'Tap to Try Again', restartStyle)
             .setOrigin(0.5);
         
         // Add all elements to container for unified positioning
-        container.add([titleText, scoreText, baseScoreText, distanceText, lifeBonusText, restartText]);
+        container.add([titleText, scoreText, baseScoreText, distanceText, lifeBonusText, lateMessage, restartText]);
 
         // Make entire screen interactive for restart
         this.input.on('pointerdown', () => {
