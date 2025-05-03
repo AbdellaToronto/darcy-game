@@ -438,7 +438,7 @@ export class MainScene extends Phaser.Scene {
         this.shiftKey = this.input.keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
         
         // Make sure we have enough pointers for multi-touch
-        this.input.addPointer(3); // Ensure we have 4 pointers total (default + 3 more)
+        this.input.addPointer(3);
         
         this.input.on(Phaser.Input.Events.POINTER_DOWN, (pointer: Phaser.Input.Pointer) => {
             // Check if we have two simultaneous touches
@@ -451,8 +451,8 @@ export class MainScene extends Phaser.Scene {
                 return;
             }
             
-            // Single touch handling for movement
-            if (pointer.id === 0) { // Use primary pointer for movement
+            // Single touch handling for movement/jump - Use pointer 1 (id: 1)
+            if (pointer.id === 1) { 
                 this.isPointerDown = true;
                 this.pointerStartX = pointer.x;
                 this.pointerStartY = pointer.y;
@@ -463,6 +463,7 @@ export class MainScene extends Phaser.Scene {
             }
         });
         this.input.on(Phaser.Input.Events.POINTER_MOVE, (pointer: Phaser.Input.Pointer) => {
+            // Ensure we are tracking the primary pointer (id: 1)
             if (!this.isPointerDown || pointer.id !== 1) return; 
             this.pointerMoveX = pointer.x;
             const dragX = this.pointerMoveX - this.pointerStartX;
@@ -474,6 +475,7 @@ export class MainScene extends Phaser.Scene {
             }
         });
         this.input.on(Phaser.Input.Events.POINTER_UP, (pointer: Phaser.Input.Pointer) => {
+             // Ensure we are tracking the primary pointer (id: 1)
              if (pointer.id !== 1) return; 
              const timeElapsed = this.time.now - this.pointerDownTime;
             const distanceMoved = Phaser.Math.Distance.Between(this.pointerStartX, this.pointerStartY, pointer.x, pointer.y);
