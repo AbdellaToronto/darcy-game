@@ -274,7 +274,7 @@ export class MainScene extends Phaser.Scene {
         ];
 
         if (!this.anims.exists('idle')) {
-            this.anims.create({ key: 'idle', frames: idleFrames, frameRate: 5 });
+            this.anims.create({ key: 'idle', frames: idleFrames, frameRate: 5, repeat: -1 });
         }
         if (!this.anims.exists('walk')) {
             this.anims.create({ key: 'walk', frames: walkFrames, frameRate: 10, repeat: -1 });
