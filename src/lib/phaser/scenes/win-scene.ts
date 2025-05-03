@@ -1,13 +1,13 @@
 import * as Phaser from 'phaser';
 
-export class GameOver extends Phaser.Scene {
+export class WinScene extends Phaser.Scene {
     private finalScore = 0;
     private baseScore = 0;
     private distanceScore = 0;
     private lifeBonus = 0;
 
     constructor() {
-        super({ key: 'GameOver' });
+        super({ key: 'WinScene' });
     }
 
     // Receive data from the scene that started this one
@@ -17,7 +17,7 @@ export class GameOver extends Phaser.Scene {
         distanceScore?: number,
         lifeBonus?: number
     }) {
-        console.log("GameOver init received data:", data);
+        console.log("WinScene init received data:", data);
         this.finalScore = data.finalScore ?? 0;
         this.baseScore = data.baseScore ?? 0;
         this.distanceScore = data.distanceScore ?? 0;
@@ -25,15 +25,15 @@ export class GameOver extends Phaser.Scene {
     }
 
     create() {
-        console.log("GameOver Scene created");
+        console.log("WinScene created");
         const { width, height } = this.scale;
 
         // --- Styling ---
-        this.cameras.main.setBackgroundColor('#2c1d3b'); // Dark purple/grunge placeholder
+        this.cameras.main.setBackgroundColor('#002244'); // Dark blue background for nighttime city feel
         
         const titleStyle = { 
-            fontSize: '64px', 
-            color: '#e43a19', 
+            fontSize: '58px', 
+            color: '#00FF00', // Green for success
             fontStyle: 'bold', 
             fontFamily: 'Impact, sans-serif',
             padding: { x: 30, y: 30 },
@@ -42,21 +42,21 @@ export class GameOver extends Phaser.Scene {
         
         const scoreStyle = { 
             fontSize: '32px', 
-            color: '#f0d5a8',
+            color: '#FFFFFF',
             padding: { x: 25, y: 15 },
             shadow: { offsetX: 2, offsetY: 2, color: '#000000', blur: 2, stroke: true, fill: true }
         };
         
         const detailStyle = { 
             fontSize: '24px', 
-            color: '#c8b69a',
+            color: '#CCCCCC',
             padding: { x: 15, y: 8 },
             shadow: { offsetX: 1, offsetY: 1, color: '#000000', blur: 1, stroke: true, fill: true }
         };
         
         const restartStyle = { 
             fontSize: '28px', 
-            color: '#c8b69a',
+            color: '#FFFFFF',
             padding: { x: 25, y: 20 },
             shadow: { offsetX: 2, offsetY: 2, color: '#000000', blur: 2, stroke: true, fill: true }
         };
@@ -66,8 +66,8 @@ export class GameOver extends Phaser.Scene {
         container.setSize(width * 0.9, height * 0.9);
         
         // --- Text Elements ---
-        // Game Over Title
-        const titleText = this.add.text(0, -height * 0.25, 'YOU WIPED OUT!', titleStyle)
+        // Win Title
+        const titleText = this.add.text(0, -height * 0.25, 'MADE IT TO WORK ON TIME!', titleStyle)
             .setOrigin(0.5)
             .setShadow(3, 3, '#000000', 5);
         
@@ -86,7 +86,7 @@ export class GameOver extends Phaser.Scene {
             .setOrigin(0.5);
         
         // Restart Text
-        const restartText = this.add.text(0, height * 0.25, 'Tap Stage to Retry', restartStyle)
+        const restartText = this.add.text(0, height * 0.25, 'Tap to Play Again', restartStyle)
             .setOrigin(0.5);
         
         // Add all elements to container for unified positioning
@@ -94,7 +94,7 @@ export class GameOver extends Phaser.Scene {
 
         // Make entire screen interactive for restart
         this.input.on('pointerdown', () => {
-            console.log("Restarting MainScene from GameOver...");
+            console.log("Restarting MainScene from WinScene...");
             
             // Reset game state in data manager
             const mainScene = this.scene.get('MainScene');

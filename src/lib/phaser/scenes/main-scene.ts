@@ -27,6 +27,21 @@ export class MainScene extends Phaser.Scene {
     private gameTimeLeft = 60000; // 60 seconds in milliseconds
     private timerText?: Phaser.GameObjects.Text;
     private gameStartTime = 0;
+    private maxDistanceReached = 0; // Track maximum distance for final scoring
+
+    // --- Obstacle Management ---
+    private obstacles?: Phaser.Physics.Arcade.Group;
+    private obstacleSpawnChance = 0.5; // Increased from 0.3 to 0.5 (50% chance per platform)
+    private obstacleBlockedPenalty = 5; // Extra points lost when blocked by obstacle
+    private obstacleSize = 120; // Size increased to 3x (was 40)
+    private isBlockedByObstacle = false;
+    private obstacleKillBonus = 200; // Points awarded for defeating a goose
+    private scorePopups: Phaser.GameObjects.Text[] = []; // Array to store score popup texts
+
+    // --- Background Management ---
+    private backgroundStars?: Phaser.GameObjects.TileSprite;
+    private midgroundBuildings?: Phaser.GameObjects.TileSprite;
+    private foregroundCity?: Phaser.GameObjects.TileSprite;
 
     // Keep game objects and state
     private player?: Phaser.Physics.Arcade.Sprite;
@@ -75,8 +90,83 @@ export class MainScene extends Phaser.Scene {
             }
         }
 
-        // --- Remove old spritesheet loading ---
-        // this.load.spritesheet('player_sheet', ...);
+        // Load goose obstacle image
+        this.load.image('obstacle', '/assets/goose.png');
+        
+        // Load background assets
+        // Create star background if it doesn't exist
+        if (!this.textures.exists('bg_stars')) {
+            const graphics = this.make.graphics({ x: 0, y: 0 });
+            
+            // Fill with deep blue
+            graphics.fillStyle(0x0a0a2a);
+            graphics.fillRect(0, 0, this.scale.width, this.scale.height);
+            
+            // Add stars
+            graphics.fillStyle(0xffffff);
+            for (let i = 0; i < 200; i++) {
+                const x = Phaser.Math.Between(0, this.scale.width);
+                const y = Phaser.Math.Between(0, this.scale.height);
+                const size = Phaser.Math.FloatBetween(0.5, 2);
+                graphics.fillCircle(x, y, size);
+            }
+            
+            // Generate texture
+            graphics.generateTexture('bg_stars', this.scale.width, this.scale.height);
+            graphics.destroy();
+        }
+        
+        // Create city skyline if it doesn't exist
+        if (!this.textures.exists('bg_buildings')) {
+            const graphics = this.make.graphics({ x: 0, y: 0 });
+            graphics.fillStyle(0x1a1a3a);
+            
+            // Draw simple buildings
+            const width = this.scale.width;
+            const height = this.scale.height;
+            
+            // Draw several buildings with different heights
+            for (let x = 0; x < width; x += 150) {
+                const buildingWidth = Phaser.Math.Between(80, 120);
+                const buildingHeight = Phaser.Math.Between(100, 250);
+                graphics.fillRect(x, height - buildingHeight, buildingWidth, buildingHeight);
+                
+                // Add windows
+                graphics.fillStyle(0xffffaa);
+                for (let wx = x + 10; wx < x + buildingWidth - 10; wx += 20) {
+                    for (let wy = height - buildingHeight + 20; wy < height - 20; wy += 40) {
+                        if (Math.random() > 0.3) { // Some windows are dark
+                            graphics.fillRect(wx, wy, 10, 15);
+                        }
+                    }
+                }
+                graphics.fillStyle(0x1a1a3a);
+            }
+            
+            // Generate texture
+            graphics.generateTexture('bg_buildings', width, height);
+            graphics.destroy();
+        }
+
+        // Create foreground city if it doesn't exist
+        if (!this.textures.exists('fg_city')) {
+            const graphics = this.make.graphics({ x: 0, y: 0 });
+            graphics.fillStyle(0x0a0a1a);
+            
+            // Draw closer buildings (silhouettes)
+            const width = this.scale.width;
+            const height = this.scale.height;
+            
+            for (let x = 0; x < width; x += 100) {
+                const buildingWidth = Phaser.Math.Between(60, 100);
+                const buildingHeight = Phaser.Math.Between(50, 150);
+                graphics.fillRect(x, height - buildingHeight, buildingWidth, buildingHeight);
+            }
+            
+            // Generate texture
+            graphics.generateTexture('fg_city', width, height);
+            graphics.destroy();
+        }
 
         // Keep placeholder platform
         if (!this.textures.exists('platform_rect')) {
@@ -93,15 +183,32 @@ export class MainScene extends Phaser.Scene {
         const gameWidth = this.scale.width;
         const gameHeight = this.scale.height;
 
+        // --- Create Parallax Background ---
+        this.backgroundStars = this.add.tileSprite(0, 0, gameWidth, gameHeight, 'bg_stars')
+            .setOrigin(0, 0)
+            .setScrollFactor(0, 0); // Fixed to camera
+        
+        this.midgroundBuildings = this.add.tileSprite(0, 0, gameWidth, gameHeight, 'bg_buildings')
+            .setOrigin(0, 0)
+            .setScrollFactor(0, 0); // Fixed to camera
+        
+        this.foregroundCity = this.add.tileSprite(0, 0, gameWidth, gameHeight, 'fg_city')
+            .setOrigin(0, 0)
+            .setScrollFactor(0, 0); // Fixed to camera
+        
         // --- Retrieve lives and score from data manager ---
         this.lives = this.data.get('currentLives') ?? 3;
-        this.score = this.data.get('currentScore') ?? 0; // Retrieve persisted score or start at 0
-        this.data.reset(); // Optional: Clear data manager after retrieving if not needed elsewhere
-        console.log(`CREATE - Retrieved/Set this.lives to: ${this.lives}, this.score to: ${this.score}`);
+        this.score = this.data.get('currentScore') ?? 0;
+        
+        // Only initialize time if not already set (persist between lives)
+        this.gameTimeLeft = this.data.get('timeLeft') ?? 60000;
+        this.maxDistanceReached = this.data.get('maxDistance') ?? 0;
+        
+        this.data.reset(); // Clear data manager after retrieving
+        console.log(`CREATE - Retrieved/Set lives: ${this.lives}, score: ${this.score}, time: ${this.gameTimeLeft}`);
 
-        // Initialize time management
+        // Initialize time tracking - use current time for countdown
         this.gameStartTime = this.time.now;
-        this.gameTimeLeft = 60000; // Reset to full time
 
         // Initialize other state
         this.startTime = this.time.now;
@@ -179,6 +286,13 @@ export class MainScene extends Phaser.Scene {
             allowGravity: false,
             immovable: true,
         });
+        
+        // --- Obstacles ---
+        this.obstacles = this.physics.add.group({
+            allowGravity: false,
+            immovable: true
+        });
+        
         let initialGroundX = 0;
         while (initialGroundX < gameWidth * 2) { 
             this.addPlatform(initialGroundX + this.platformWidth / 2, groundY);
@@ -187,6 +301,18 @@ export class MainScene extends Phaser.Scene {
 
         // --- Physics --- 
         this.physics.add.collider(this.player, this.platforms);
+        
+        // Add collision between player and obstacles
+        this.physics.add.collider(
+            this.player, 
+            this.obstacles, 
+            (player, obstacle) => this.handleObstacleCollision(
+                player as Phaser.Physics.Arcade.Sprite, 
+                obstacle as Phaser.Physics.Arcade.Sprite
+            ),
+            undefined, 
+            this
+        );
 
         // --- Continue Platform Generation (Start further ahead) --- 
         this.furthestPlatformX = initialGroundX; 
@@ -221,7 +347,7 @@ export class MainScene extends Phaser.Scene {
             strokeThickness: 4,
             shadow: { offsetX: 2, offsetY: 2, color: '#000000', blur: 2, stroke: true, fill: true }
         };
-        this.timerText = this.add.text(this.scale.width / 2, 16, `1:00`, timerStyle)
+        this.timerText = this.add.text(this.scale.width / 2, 41, `1:00`, timerStyle) // Moved down by 25px
             .setOrigin(0.5, 0) // Center-top alignment
             .setScrollFactor(0); // Fix to camera
 
@@ -240,24 +366,31 @@ export class MainScene extends Phaser.Scene {
         this.cursors = this.input.keyboard?.createCursorKeys();
         this.spaceBar = this.input.keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
         this.shiftKey = this.input.keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
-        this.input.addPointer(1);
+        
+        // Make sure we have enough pointers for multi-touch
+        this.input.addPointer(3); // Ensure we have 4 pointers total (default + 3 more)
+        
         this.input.on(Phaser.Input.Events.POINTER_DOWN, (pointer: Phaser.Input.Pointer) => {
-            const pointer2IsDown = this.input.pointer2?.isDown ?? false;
-            if (pointer2IsDown && !this.pointer2PreviouslyDown) {
-                 console.log("Pointer 2 just pressed - Attack!");
-                 this.touchAttack = true;
-                 this.isPointerDown = false; 
-                 this.pointer2PreviouslyDown = true; 
+            // Check if we have two simultaneous touches
+            const activeTouches = this.countActiveTouches();
+            
+            if (activeTouches >= 2) {
+                // Two or more fingers are touching - trigger attack
+                console.log("Two or more touches detected - Attack!");
+                this.touchAttack = true;
+                return;
             }
-             if (pointer.id !== 1 || this.touchAttack) return; 
-             this.isPointerDown = true;
-            this.pointerStartX = pointer.x;
-            this.pointerStartY = pointer.y;
-            this.pointerMoveX = pointer.x; 
-            this.pointerDownTime = this.time.now;
-            this.touchMoveDirection = 'none'; 
-            this.touchJump = false;
-            this.touchAttack = false; 
+            
+            // Single touch handling for movement
+            if (pointer.id === 0) { // Use primary pointer for movement
+                this.isPointerDown = true;
+                this.pointerStartX = pointer.x;
+                this.pointerStartY = pointer.y;
+                this.pointerMoveX = pointer.x; 
+                this.pointerDownTime = this.time.now;
+                this.touchMoveDirection = 'none'; 
+                this.touchJump = false;
+            }
         });
         this.input.on(Phaser.Input.Events.POINTER_MOVE, (pointer: Phaser.Input.Pointer) => {
             if (!this.isPointerDown || pointer.id !== 1) return; 
@@ -299,6 +432,16 @@ export class MainScene extends Phaser.Scene {
         console.log(`CREATE - Initialized UI Text with Lives: ${this.lives}`);
     }
 
+    // New helper method to count active touches
+    countActiveTouches() {
+        let count = 0;
+        if (this.input.pointer1.isDown) count++;
+        if (this.input.pointer2.isDown) count++;
+        if (this.input.pointer3.isDown) count++;
+        if (this.input.pointer4.isDown) count++;
+        return count;
+    }
+
     // Helper function to add a platform
     addPlatform(x: number, y: number) {
         const platform = this.platforms?.get(x, y, 'platform_rect') as Phaser.Physics.Arcade.Sprite | undefined;
@@ -310,8 +453,149 @@ export class MainScene extends Phaser.Scene {
                 platform.body.enable = true;
             }
             platform.refreshBody();
+            
+            // Randomly spawn an obstacle on this platform (except on the first few platforms)
+            if (this.obstacles && x > this.scale.width * 1.5 && Math.random() < this.obstacleSpawnChance) {
+                // Spawn obstacle above the platform
+                const obstacleY = y - this.platformHeight / 2 - this.obstacleSize / 2;
+                
+                // Randomize height between on platform and floating above
+                const floatingHeight = Math.random() < 0.6 ? 
+                    Phaser.Math.Between(20, 100) : 0;
+                    
+                this.addObstacle(x, obstacleY - floatingHeight);
+            }
         }
         return platform;
+    }
+
+    // New helper function to add an obstacle
+    addObstacle(x: number, y: number) {
+        if (!this.obstacles) return;
+        
+        const obstacle = this.obstacles.get(x, y, 'obstacle') as Phaser.Physics.Arcade.Sprite | undefined;
+        if (obstacle) {
+            obstacle.setActive(true);
+            obstacle.setVisible(true);
+            obstacle.setOrigin(0.5, 0.5);
+            
+            // Scale the goose to appropriate size
+            const scale = 0.5; // Adjust this value as needed for appropriate sizing
+            obstacle.setScale(scale);
+            
+            if (obstacle.body) {
+                obstacle.body.enable = true;
+                // Set collision box to be appropriate for the goose shape
+                // Make it slightly smaller than the visual for better gameplay feel
+                const collisionWidth = this.obstacleSize * 0.8;
+                const collisionHeight = this.obstacleSize * 0.5; // Lower height for goose shape
+                obstacle.body.setSize(collisionWidth, collisionHeight);
+                // Adjust offset for better collision alignment with the goose visual
+                obstacle.body.setOffset((obstacle.width * scale - collisionWidth) / 2, obstacle.height * scale - collisionHeight);
+            }
+            
+            obstacle.refreshBody();
+            
+            // Add a data property to track if this obstacle has been attacked
+            obstacle.setData('attacked', false);
+            
+            // Add bobbing animation
+            this.tweens.add({
+                targets: obstacle,
+                y: obstacle.y - 15, // Move up 15px
+                duration: Phaser.Math.Between(700, 1000), // Random duration for variation
+                ease: 'Sine.easeInOut',
+                yoyo: true, // Go back and forth
+                repeat: -1 // Loop forever
+            });
+        }
+        return obstacle;
+    }
+
+    // Collision handler for obstacles
+    handleObstacleCollision(player: Phaser.Physics.Arcade.Sprite, obstacle: Phaser.Physics.Arcade.Sprite) {
+        // Only handle collision if the player is not attacking and the obstacle hasn't been attacked
+        if (!this.isAttacking && !obstacle.getData('attacked')) {
+            // Set flag that player is blocked by obstacle for scoring
+            this.isBlockedByObstacle = true;
+        } else if (this.isAttacking && !obstacle.getData('attacked')) {
+            // If player is attacking and obstacle hasn't been attacked yet
+            
+            // Mark as attacked
+            obstacle.setData('attacked', true);
+            
+            // Add points
+            this.score += this.obstacleKillBonus;
+            
+            // Show floating score text
+            this.showFloatingScore(obstacle.x, obstacle.y, `+${this.obstacleKillBonus}`);
+            
+            // Immediately disable collision on the obstacle
+            if (obstacle.body) {
+                obstacle.body.enable = false;
+            }
+            
+            // Play defeat animation
+            this.defeatObstacle(obstacle);
+            
+            // No longer blocked
+            this.isBlockedByObstacle = false;
+        }
+    }
+
+    // New method to handle obstacle defeat effects
+    defeatObstacle(obstacle: Phaser.Physics.Arcade.Sprite) {
+        // Stop the bobbing animation by removing all tweens for this obstacle
+        this.tweens.killTweensOf(obstacle);
+        
+        // Play "flop off screen" animation
+        this.tweens.add({
+            targets: obstacle,
+            x: obstacle.x + Phaser.Math.Between(200, 400) * (Math.random() > 0.5 ? 1 : -1),
+            y: this.scale.height + 200, // Further off bottom of screen
+            angle: Phaser.Math.Between(360, 720) * (Math.random() > 0.5 ? 1 : -1), // Spin 2-4 times
+            scale: 0.2, // Shrink as it flies away
+            duration: 1500,
+            ease: 'Cubic.easeIn',
+            onComplete: () => {
+                obstacle.destroy();
+            }
+        });
+    }
+
+    // New method to display floating score text
+    showFloatingScore(x: number, y: number, text: string) {
+        const style = { 
+            fontSize: '24px', 
+            color: '#FFFF00', 
+            fontStyle: 'bold',
+            stroke: '#000000',
+            strokeThickness: 4,
+            shadow: { offsetX: 1, offsetY: 1, color: '#000000', blur: 2, stroke: true, fill: true }
+        };
+        
+        const scoreText = this.add.text(x, y, text, style)
+            .setOrigin(0.5, 0.5);
+        
+        // Add to array for cleanup
+        this.scorePopups.push(scoreText);
+        
+        // Animate the text floating up and fading out
+        this.tweens.add({
+            targets: scoreText,
+            y: y - 50,
+            alpha: 0,
+            duration: 1500,
+            ease: 'Cubic.easeOut',
+            onComplete: () => {
+                // Remove from array and destroy
+                const index = this.scorePopups.indexOf(scoreText);
+                if (index > -1) {
+                    this.scorePopups.splice(index, 1);
+                }
+                scoreText.destroy();
+            }
+        });
     }
 
     generatePlatforms() {
@@ -407,7 +691,8 @@ export class MainScene extends Phaser.Scene {
 
         // --- Update countdown timer ---
         const elapsedTime = this.time.now - this.gameStartTime;
-        this.gameTimeLeft = Math.max(0, 60000 - elapsedTime);
+        this.gameTimeLeft = Math.max(0, this.gameTimeLeft - elapsedTime);
+        this.gameStartTime = this.time.now; // Reset start time for next frame
         
         const secondsLeft = Math.ceil(this.gameTimeLeft / 1000);
         const minutes = Math.floor(secondsLeft / 60);
@@ -425,6 +710,11 @@ export class MainScene extends Phaser.Scene {
         } else {
             this.timerText.setScale(1);
             this.timerText.setColor('#FFFFFF');
+        }
+        
+        // Update max distance reached for scoring
+        if (this.player.x > this.maxDistanceReached) {
+            this.maxDistanceReached = this.player.x;
         }
         
         // Check for time-out game over
@@ -446,11 +736,15 @@ export class MainScene extends Phaser.Scene {
                 this.score += 1;
                 // Reset the scoring timer when making progress
                 this.scoringTimer = currentTime;
+                // Reset obstacle blocked flag when making progress
+                this.isBlockedByObstacle = false;
             } else {
                 // Player is not making progress - decrease score after delay
                 if (currentTime - this.scoringTimer > this.scoringInterval) {
-                    // Decrement score if player is stuck/not moving forward
-                    this.score = Math.max(0, this.score - 3); // Decrease faster than increase, min 0
+                    // Calculate penalty - higher if blocked by obstacle
+                    const penalty = this.isBlockedByObstacle ? this.obstacleBlockedPenalty : 3;
+                    // Decrement score with applicable penalty
+                    this.score = Math.max(0, this.score - penalty);
                     this.scoringTimer = currentTime; // Reset timer
                 }
             }
@@ -471,12 +765,18 @@ export class MainScene extends Phaser.Scene {
         this.touchJump = false;
         this.touchAttack = false;
         const currentSpeed = this.isRunning ? this.runSpeed : this.walkSpeed;
-        if (doAttack && !this.isAttacking && this.player.body?.touching.down) {
+        
+        // --- Attack handling (updated to include obstacle checking) ---
+        if (doAttack && !this.isAttacking) {
+            // Removed body?.touching.down check to allow mid-air attacks
             console.log("LOG: Attack conditions met. Playing 'attack'...");
             this.isAttacking = true;
             this.player.setVelocityX(0);
             this.player.anims.play('attack', false);
             console.log(`LOG: Called play('attack'). Current anim: ${this.player.anims.currentAnim?.key}`);
+            
+            // Check for nearby obstacles to destroy
+            this.checkAttackNearbyObstacles();
         }
         if (!this.isAttacking) {
             this.player.setVelocityX(currentSpeed);
@@ -506,9 +806,23 @@ export class MainScene extends Phaser.Scene {
 
         // --- Update previous pointer states --- 
         this.pointer2PreviouslyDown = this.input.pointer2?.isDown ?? false;
+        
+        // Remove obstacles that are far behind
+        this.cleanupObstacles();
+
+        // Update parallax background
+        if (this.backgroundStars && this.midgroundBuildings && this.foregroundCity && this.player) {
+            // Calculate scroll based on player position
+            const playerXProgress = this.player.x / this.targetWorldWidth;
+            
+            // Different scroll speeds for each layer
+            this.backgroundStars.tilePositionX = playerXProgress * 200; // Stars move very slowly
+            this.midgroundBuildings.tilePositionX = playerXProgress * 500; // Buildings move a bit faster
+            this.foregroundCity.tilePositionX = playerXProgress * 800; // Foreground moves fastest
+        }
     }
 
-    // --- New Method: Lose Life / Game Over Check ---
+    // --- Method: Lose Life / Game Over Check ---
     loseLife() {
         if (!this.player || !this.livesText) return;
         
@@ -524,18 +838,101 @@ export class MainScene extends Phaser.Scene {
             console.log("LOSE LIFE - Calling handleGameOver()");
             this.handleGameOver();
         } else {
-            // --- Store lives and score in data manager before restart ---
-            console.log(`LOSE LIFE - Storing lives: ${this.lives} and score: ${this.score} in data manager and restarting.`);
+            // --- Store lives, score, time, and distance in data manager before restart ---
+            console.log(`LOSE LIFE - Storing lives: ${this.lives}, score: ${this.score}, time: ${this.gameTimeLeft}`);
             this.data.set('currentLives', this.lives);
             this.data.set('currentScore', this.score);
-            this.scene.restart(); // No need to pass data object now
+            this.data.set('timeLeft', this.gameTimeLeft);
+            this.data.set('maxDistance', this.maxDistanceReached);
+            this.scene.restart();
         }
     }
 
-    // --- New Method: Handle Game Over Transition ---
+    // --- Method: Handle Game Over Transition ---
     handleGameOver() {
-         console.log(`Game Over! Final Score: ${this.score}`);
-         // Pass final score to GameOver scene
-         this.scene.start('GameOver', { finalScore: this.score });
+        console.log(`Game Over! Final Score: ${this.score}`);
+        
+        // Calculate final score components
+        const baseScore = this.score;
+        const distanceScore = Math.floor(this.maxDistanceReached / 100); // 1 point per 100 units traveled
+        const lifeBonus = this.lives * 1000; // 1000 points per remaining life
+        const finalScore = baseScore + distanceScore + lifeBonus;
+        
+        // Check if player "won" by getting to work on time (score >= 5000)
+        const gameWon = finalScore >= 5000;
+        
+        // Pass data to appropriate end scene
+        if (gameWon) {
+            this.scene.start('WinScene', { 
+                finalScore: finalScore,
+                baseScore: baseScore,
+                distanceScore: distanceScore,
+                lifeBonus: lifeBonus
+            });
+        } else {
+            this.scene.start('GameOver', { 
+                finalScore: finalScore,
+                baseScore: baseScore,
+                distanceScore: distanceScore,
+                lifeBonus: lifeBonus
+            });
+        }
+    }
+
+    // New method to check for and destroy obstacles when attacking
+    checkAttackNearbyObstacles() {
+        if (!this.player || !this.obstacles) return;
+        
+        // Calculate attack range in front of player
+        const attackRange = this.playerCollisionWidth * 1.5;
+        const playerX = this.player.x;
+        const playerY = this.player.y;
+        
+        // Get all obstacles within range
+        this.obstacles.getChildren().forEach(child => {
+            const obstacle = child as Phaser.Physics.Arcade.Sprite;
+            
+            // Check if obstacle is within attack range
+            const dx = obstacle.x - playerX;
+            const dy = obstacle.y - playerY;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            
+            if (distance < attackRange) {
+                // Mark as attacked (will be destroyed on next collision)
+                obstacle.setData('attacked', true);
+                obstacle.setTint(0x555555);
+            }
+        });
+    }
+
+    // New method to remove obstacles that are far behind the player
+    cleanupObstacles() {
+        if (!this.player || !this.obstacles) return;
+        
+        const cameraScrollX = this.cameras.main.scrollX;
+        const obstaclesToRemove: Phaser.GameObjects.GameObject[] = [];
+        
+        this.obstacles.getChildren().forEach(child => {
+            const obstacle = child as Phaser.Physics.Arcade.Sprite;
+            if (obstacle.active && obstacle.x < cameraScrollX - this.platformKillOffset) {
+                obstaclesToRemove.push(obstacle);
+            }
+        });
+        
+        obstaclesToRemove.forEach(obstacle => {
+            this.obstacles?.remove(obstacle, true, true);
+        });
+    }
+
+    // Override destroy to clean up any active tweens
+    shutdown() {
+        // Clean up all score popups
+        this.scorePopups.forEach(popup => {
+            popup.destroy();
+        });
+        this.scorePopups = [];
+        
+        // Stop all tweens
+        this.tweens.killAll();
     }
 } 
