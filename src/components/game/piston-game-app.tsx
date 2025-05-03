@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef } from "react";
 import { IRefPhaserGame, PhaserGame } from "./phaser-game";
 // Import scene types if you need to check scene keys or call scene methods
 // import { MainScene } from '@/lib/phaser/scenes/main-scene';
