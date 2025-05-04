@@ -13,8 +13,8 @@ export class MainScene extends Phaser.Scene {
     private jumpVelocity = -400;
     private platformScrollMargin = 400;
     private platformKillOffset = 800;
-    private platformWidth = 300;
     private platformHeight = 32;
+    private basePlatformWidth = 300; // Base width for calculations
     private targetWorldWidth = 20000; // Target width for ~1 min run
     private playerCollisionWidth = 0; // Store player collision width for platform gap calculation
     private lastPlayerX = 0; // Track player position for scoring
@@ -87,7 +87,15 @@ export class MainScene extends Phaser.Scene {
     private jumpBufferTimer = 0;
     private jumpBufferDuration = 150; // Milliseconds to buffer jump input
 
-    // --- New Gameplay State ---
+    // --- Multi-Jump State --- 
+    // Rename/Repurpose: Track count of active powerups
+    private activePowerupCount = 0; 
+    // Track jumps used since last grounded
+    private midAirJumpsUsed = 0;
+    private jumpIndicators?: Phaser.GameObjects.Group; 
+    private lastPlacedPlatformY: number = 0; // Track Y position globally
+
+    // --- Gameplay State ---
     private score = 0;
     private lives!: number;
     private startTime = 0; 
@@ -202,8 +210,8 @@ export class MainScene extends Phaser.Scene {
         if (!this.textures.exists('platform_rect')) {
             const graphics = this.make.graphics();
             graphics.fillStyle(0x228b22);
-            graphics.fillRect(0, 0, this.platformWidth, this.platformHeight);
-            graphics.generateTexture('platform_rect', this.platformWidth, this.platformHeight);
+            graphics.fillRect(0, 0, this.basePlatformWidth, this.platformHeight);
+            graphics.generateTexture('platform_rect', this.basePlatformWidth, this.platformHeight);
             graphics.destroy();
         }
 
@@ -354,11 +362,24 @@ export class MainScene extends Phaser.Scene {
             allowGravity: false,
         });
         
-        let initialGroundX = 0;
-        while (initialGroundX < gameWidth * 2) { 
-            this.addPlatform(initialGroundX + this.platformWidth / 2, groundY);
-            initialGroundX += this.platformWidth;
+        let currentX = 0;
+        const flatGroundEndX = gameWidth * 2 - this.basePlatformWidth;
+        while (currentX < flatGroundEndX) { 
+            const platformCenterX = currentX + this.basePlatformWidth / 2;
+            this.addPlatform(platformCenterX, groundY, this.basePlatformWidth);
+            currentX += this.basePlatformWidth;
+            // Note: lastPlacedPlatformY remains groundY here
         }
+
+        // --- Manually add the last initial platform with a small gap ---
+        const firstGapDistance = 50; 
+        // Position relative to the end of the last contiguous platform (currentX)
+        const lastInitialPlatformX = currentX + firstGapDistance + (this.basePlatformWidth / 2);
+        this.addPlatform(lastInitialPlatformX, groundY, this.basePlatformWidth);
+
+        // Update global state after placing the last initial platform
+        this.lastPlacedPlatformY = groundY; // It's still at ground level
+        this.furthestPlatformX = lastInitialPlatformX + (this.basePlatformWidth / 2);
 
         // --- Physics --- 
         this.physics.add.collider(this.player, this.platforms);
@@ -386,24 +407,6 @@ export class MainScene extends Phaser.Scene {
             undefined,
             this
         );
-
-        // --- REMOVE the Initial Randomized Buffer generation from create --- 
-        /*
-        this.furthestPlatformX = initialGroundX; 
-        const initialGenerationEndX = gameWidth + this.platformScrollMargin * 2;
-        while(this.furthestPlatformX < initialGenerationEndX) { 
-            const platformY = groundY - (Math.random() * 150);
-            this.addPlatform(this.furthestPlatformX + this.platformWidth / 2, platformY);
-            if (Math.random() > 0.3) { 
-                 this.furthestPlatformX += this.platformWidth;
-             } else {
-                 this.furthestPlatformX += this.platformWidth * Phaser.Math.Between(2, 4); 
-             }
-        }
-        */
-        // Set furthestPlatformX to the end of the initial flat ground.
-        // generatePlatforms() in update() will take over from here.
-        this.furthestPlatformX = initialGroundX; 
 
         // --- UI Text --- 
         const textStyle = { fontSize: '24px', color: '#FFFF00', fontStyle: 'bold', stroke: '#000000', strokeThickness: 4 };
@@ -547,6 +550,11 @@ export class MainScene extends Phaser.Scene {
                 this.attackEffectSprite.setVisible(false);
             }
         });
+
+        // --- Create UI for Jump Indicators ---
+        this.jumpIndicators = this.add.group();
+        // Initial update in case starting with charges (though we start with 0)
+        this.updateJumpIndicators(); 
     }
 
     // New helper method to count active touches
@@ -560,16 +568,18 @@ export class MainScene extends Phaser.Scene {
     }
 
     // Helper function to add a platform
-    addPlatform(x: number, y: number) {
+    addPlatform(x: number, y: number, width: number) {
         const platform = this.platforms?.get(x, y, 'platform_rect') as Phaser.Physics.Arcade.Sprite | undefined;
         if (platform) {
             platform.setActive(true);
             platform.setVisible(true);
             platform.setOrigin(0.5, 0.5);
+            platform.setDisplaySize(width, this.platformHeight); // Set display size
             if (platform.body) {
                 platform.body.enable = true;
+                // Important: Refresh body *after* changing display size
+                platform.refreshBody(); 
             }
-            platform.refreshBody();
             
             // Randomly spawn an obstacle on this platform (except on the first few platforms)
             if (this.obstacles && x > this.scale.width * 1.5 && Math.random() < this.obstacleSpawnChance) {
@@ -713,11 +723,29 @@ export class MainScene extends Phaser.Scene {
             particles.destroy();
         });
         
-        // Start powerup state
+        // --- Grant Extra Jump via Active Powerup Count --- 
+        this.activePowerupCount++;
+        console.log(`Powerup collected! Active powerups: ${this.activePowerupCount}`);
+        this.updateJumpIndicators(); // Update UI
+
+        // --- Schedule expiration for THIS powerup --- 
+        this.time.delayedCall(this.powerupDuration, this.expireSinglePowerup, [], this);
+        console.log(`Scheduled powerup expiration in ${this.powerupDuration}ms`);
+
+        // Start visual/audio/speed powerup state (based on last pickup)
         this.activatePowerup();
         
-        // Destroy the powerup
         powerup.destroy();
+    }
+
+    // --- New method to handle expiration of one powerup instance ---
+    expireSinglePowerup() {
+        if (this.activePowerupCount > 0) {
+            this.activePowerupCount--;
+            console.log(`A powerup expired! Active powerups remaining: ${this.activePowerupCount}`);
+            this.updateJumpIndicators();
+            // Optional TODO: Refactor deactivatePowerup check based on count == 0
+        }
     }
 
     // Method to activate powerup state
@@ -910,73 +938,100 @@ export class MainScene extends Phaser.Scene {
 
         const playerX = this.player.x;
         const cameraScrollX = this.cameras.main.scrollX;
-        const generationLimitX = this.targetWorldWidth - this.platformWidth; // Ensure space for last platform
+        const generationLimitX = this.targetWorldWidth - this.basePlatformWidth; 
         const groundY = this.scale.height - this.platformHeight / 2;
         
-        const lastPlatformY = groundY; // Tracks the Y of the previously added platform
-        // Store the Y of the platform from the PREVIOUS iteration for deltaY calculation
-        let yBeforeCurrent = lastPlatformY; 
+        let yBeforeCurrent = this.lastPlacedPlatformY; 
 
-        // Generate new platforms ahead of the player, up to the limit
+        // --- Calculate Max Jump Distance (Once) ---
+        const gravity = this.physics.world.gravity.y;
+        const maxHorizontalSpeed = this.powerupRunSpeed; 
+        const jumpVel = Math.abs(this.jumpVelocity);
+        const maxAirTime = (2 * jumpVel) / gravity; 
+        const maxHorizontalJumpDistance = maxHorizontalSpeed * maxAirTime;
+
+        // --- Define Gap Constraints in Pixels ---
+        // Reduce min gap multiplier to ensure it's < safe max
+        const minGapPixels = this.playerCollisionWidth * 1.1; 
+        const safetyMargin = 0.80; 
+        const baseSafeMaxGapPixels = maxHorizontalJumpDistance * safetyMargin; 
+        console.log(`Min Gap Pixels: ${minGapPixels.toFixed(2)}, Base Safe Max Gap Pixels: ${baseSafeMaxGapPixels.toFixed(2)}`);
+
         while (this.furthestPlatformX < playerX + this.platformScrollMargin + this.scale.width && this.furthestPlatformX < generationLimitX) {
+            // --- Calculate Platform Width --- 
+            const widthVariance = 0.3; // e.g., 70% to 130%
+            const currentPlatformWidth = this.basePlatformWidth * Phaser.Math.FloatBetween(1 - widthVariance, 1 + widthVariance);
+
+            // --- Calculate Platform Height --- 
             let platformY = groundY;
-            
-            // Calculate maximum height difference as 60% of character height
-            const maxHeightDelta = this.playerCharacterHeight * 0.6;
-            
-            // Add more variety: occasional higher platforms, never lower than ground level
+            const maxHeightDelta = this.playerCharacterHeight * 0.6; // Max Y diff from last platform
             const randHeight = Math.random();
-            if (randHeight < 0.3) { // 30% chance of higher platform
-                // Ensure new platforms are never too far from the last one (smooth transition)
-                const minHeight = Math.max(groundY - 250, lastPlatformY - maxHeightDelta);
-                const maxHeight = Math.max(groundY - 100, lastPlatformY - 50);
-                platformY = Phaser.Math.Between(minHeight, maxHeight);
+            
+            if (randHeight < 0.6) { // Increased chance (60%) of varied height
+                 // Allow slight downward variation too, but ensure jumpable
+                 const minYDelta = -this.playerCharacterHeight * 0.2; // Max downward step (e.g., 20% player height)
+                 const minAllowedY = Math.max(groundY - 250, yBeforeCurrent - maxHeightDelta);
+                 const maxAllowedY = Math.min(groundY, yBeforeCurrent - minYDelta); // Allow lower Y (move down)
+                 
+                 // Clamp calculated Y between min/max allowed relative to previous
+                 platformY = Phaser.Math.Clamp(
+                     Phaser.Math.Between(minAllowedY, maxAllowedY), // Target Y
+                     minAllowedY, // Absolute min allowed
+                     groundY // Absolute max allowed (ground)
+                 ); 
             }
+            platformY = Math.min(platformY, groundY); // Ensure never below ground
             
-            // Never spawn platforms below ground level
-            platformY = Math.min(platformY, groundY);
-            
-            // *** Calculate deltaY BEFORE adding the platform and BEFORE updating lastPlatformY ***
-            const deltaY = yBeforeCurrent - platformY; // Positive means new platform (platformY) is higher
+            const deltaY = yBeforeCurrent - platformY; 
 
-            this.addPlatform(this.furthestPlatformX + this.platformWidth / 2, platformY);
-            
-            // --- Modified Gap Calculation --- 
-
-            // Calculate minimum gap based on player collision width
-            const minGap = this.playerCollisionWidth * 1.5;
-            // Increase minimum factor from 1.2 to 1.35 to prevent too-small gaps
-            const minGapMultiplier = Math.max(1.35, minGap / this.platformWidth); 
-            
-            // Adjust the *maximum* gap multiplier based on upward jumps (using the correctly calculated deltaY)
-            let currentMaxGapMultiplier = this.maxGapMultiplier; 
-            if (deltaY > this.playerCharacterHeight * 0.3) { // If jumping up significantly (e.g., >30% player height)
-                // Reduce the max gap significantly after a high platform
-                currentMaxGapMultiplier = Math.max(minGapMultiplier, this.maxGapMultiplier * 0.6); // e.g. reduce max to 60% (ensure it's not less than min)
-            } else if (deltaY > 0) { // If jumping up even a little
-                 // Reduce max gap moderately
-                 currentMaxGapMultiplier = Math.max(minGapMultiplier, this.maxGapMultiplier * 0.8); // e.g. reduce max to 80%
+            // --- Determine the Max Gap for THIS specific iteration --- 
+            let currentSafeMaxGapPixels = baseSafeMaxGapPixels; 
+            if (yBeforeCurrent === groundY) {
+                currentSafeMaxGapPixels *= 0.7; 
             }
-            // Otherwise (same level or lower), use the default max gap multiplier
+            currentSafeMaxGapPixels = Math.max(minGapPixels, currentSafeMaxGapPixels);
 
-            // Vary gaps, ensuring minimum and *adjusted* maximum gap requirements are met
+            // --- Calculate Adjusted Max Gap Multiplier --- 
+            const minGapMultiplier = minGapPixels / this.basePlatformWidth;
+            const currentSafeMaxGapMultiplier = currentSafeMaxGapPixels / this.basePlatformWidth;
+            let currentMaxGapMultiplierBasedOnDeltaY = this.maxGapMultiplier; 
+            if (deltaY > this.playerCharacterHeight * 0.3) { 
+                currentMaxGapMultiplierBasedOnDeltaY = Math.max(minGapMultiplier, this.maxGapMultiplier * 0.6); 
+            } else if (deltaY > 0) { 
+                 currentMaxGapMultiplierBasedOnDeltaY = Math.max(minGapMultiplier, this.maxGapMultiplier * 0.8); 
+            }
+            const finalMaxMultiplier = Math.min(currentMaxGapMultiplierBasedOnDeltaY, currentSafeMaxGapMultiplier);
+            const finalMinMultiplier = minGapMultiplier;
+            const clampedFinalMaxMultiplier = Math.max(finalMinMultiplier, finalMaxMultiplier);
+
+            // --- Generate Gap Multiplier with Bias --- 
             let gapMultiplier;
-            if (Math.random() < 0.65) { 
-                // Smaller gaps
+            if (Math.random() < 0.80) { // 80% chance of smaller/medium gap
                 gapMultiplier = Phaser.Math.FloatBetween(
-                    minGapMultiplier, 
-                    Math.min(minGapMultiplier + 0.5, currentMaxGapMultiplier) // Use adjusted max
+                    finalMinMultiplier, 
+                    finalMinMultiplier + (clampedFinalMaxMultiplier - finalMinMultiplier) * 0.75
                 );
-            } else { 
-                // Larger gaps
-                gapMultiplier = Phaser.Math.FloatBetween(
-                    Math.min(minGapMultiplier + 0.3, currentMaxGapMultiplier - 0.1), // Use adjusted max
-                    currentMaxGapMultiplier // Use adjusted max
+            } else { // 20% chance of larger gap
+                 gapMultiplier = Phaser.Math.FloatBetween(
+                    finalMinMultiplier + (clampedFinalMaxMultiplier - finalMinMultiplier) * 0.60, 
+                    clampedFinalMaxMultiplier 
                 );
             }
-            this.furthestPlatformX += this.platformWidth * gapMultiplier;
 
-            // *** Update yBeforeCurrent for the NEXT iteration AFTER calculating the gap for the current one ***
+            // Calculate the initial gap distance based on multiplier
+            const initialGapDistance = this.basePlatformWidth * gapMultiplier;
+
+            // --- Final Clamp --- 
+            const finalGapDistance = Phaser.Math.Clamp(initialGapDistance, minGapPixels, currentSafeMaxGapPixels);
+
+            // --- Calculate X Position --- 
+            const platformX = this.furthestPlatformX + finalGapDistance + (currentPlatformWidth / 2);
+
+            this.addPlatform(platformX, platformY, currentPlatformWidth); 
+            
+            // --- Updates --- 
+            this.furthestPlatformX = platformX + (currentPlatformWidth / 2);
+            this.lastPlacedPlatformY = platformY; 
             yBeforeCurrent = platformY; 
         }
 
@@ -1145,7 +1200,7 @@ export class MainScene extends Phaser.Scene {
             this.checkAttackNearbyObstacles();
         }
         
-        // --- Movement & Animation --- 
+        // --- Movement, Animation, Mid-Air Jump Reset --- 
         if (!this.isAttacking) {
             this.player.setVelocityX(currentSpeed);
             this.player.setFlipX(false);
@@ -1155,10 +1210,20 @@ export class MainScene extends Phaser.Scene {
             const isGrounded = this.player.body?.blocked.down ?? false;
             
             if (isGrounded) { 
-                // On the ground: Reset airborne timer and play run/walk
+                // --- Player has landed --- 
+                let justLanded = false; // Flag to see if we need to update indicators
+                if (this.midAirJumpsUsed > 0) {
+                    console.log("Landed, resetting mid-air jump counter.");
+                    this.midAirJumpsUsed = 0;
+                    justLanded = true;
+                }
                 this.airborneTimer = 0;
                 if (this.player.anims.currentAnim?.key !== animKey) {
                     this.player.anims.play(animKey, true);
+                }
+                // Update indicators AFTER resetting jumps if needed
+                if (justLanded) {
+                    this.updateJumpIndicators(); 
                 }
             } else {
                 // In the air: Handle coyote time for idle animation
@@ -1171,13 +1236,30 @@ export class MainScene extends Phaser.Scene {
             }
         } // End if (!this.isAttacking)
         
-        // --- Execute Jump (Uses Buffer & Ground Check) --- 
+        // --- Execute Jump (Uses Buffer, Ground Check, OR Active Powerup Count) --- 
         const jumpBufferActive = this.time.now - this.jumpBufferTimer < this.jumpBufferDuration;
-        const canJump = (this.player.body?.blocked.down ?? false); // Use blocked.down for jump condition too
+        const canJumpFromGround = (this.player.body?.blocked.down ?? false);
+        const canMultiJump = this.activePowerupCount > this.midAirJumpsUsed;
+        // Add velocity check: only multi-jump if not moving strongly upwards
+        const isMovingUp = (this.player.body?.velocity.y ?? 0) < -50; // Small threshold 
 
-        if (jumpBufferActive && canJump && !this.isAttacking) {
+        if (jumpBufferActive && !this.isAttacking && (canJumpFromGround || (canMultiJump && !isMovingUp))) {
+            // --- DEBUG LOG --- 
+            console.log(`>>> Jump Executing: Buffer=${jumpBufferActive}, Grounded=${canJumpFromGround}, Multi=${canMultiJump}, UsedAir=${this.midAirJumpsUsed}, ActiveP=${this.activePowerupCount}`);
+            // --- END DEBUG --- 
+            
             this.player.setVelocityY(this.jumpVelocity);
-            this.jumpBufferTimer = 0; // Consume the buffer so jump doesn't repeat
+            let multiJumpUsed = false; // Flag to see if we need to update indicators
+            if (!canJumpFromGround && canMultiJump) {
+                this.midAirJumpsUsed++;
+                console.log(`    Multi-jump Used! New count: ${this.midAirJumpsUsed}`);
+                multiJumpUsed = true; 
+            }
+            this.jumpBufferTimer = 0; // Consume the buffer
+            // Update indicators AFTER using a multi-jump
+            if (multiJumpUsed) {
+                this.updateJumpIndicators();
+            }
         }
         
         this.generatePlatforms();
@@ -1214,11 +1296,22 @@ export class MainScene extends Phaser.Scene {
     loseLife() {
         if (!this.player || !this.livesText) return;
         
-        // End powerup state if active
+        // End powerup state if active (visuals/speed)
         if (this.isPoweredUp) {
             this.deactivatePowerup();
         }
         
+        // --- Reset Powerup Jump Count & Mid-Air Jumps on Life Loss --- 
+        if (this.activePowerupCount > 0) {
+            console.log("Life lost, resetting active powerup count.");
+            this.activePowerupCount = 0;
+            // UI will update on scene restart via create()
+        }
+        if (this.midAirJumpsUsed > 0) {
+            console.log("Life lost, resetting mid-air jump counter.");
+            this.midAirJumpsUsed = 0; 
+        }
+
         const livesBefore = this.lives;
         this.lives--;
         const livesAfter = this.lives;
@@ -1393,5 +1486,31 @@ export class MainScene extends Phaser.Scene {
         
         // Stop all tweens
         this.tweens.killAll();
+    }
+
+    // --- Update Jump Indicators Method --- 
+    updateJumpIndicators() {
+        if (!this.jumpIndicators) return;
+        this.jumpIndicators.clear(true, true); 
+        
+        const startX = this.scale.width / 2; 
+        const startY = 130;                 
+        const iconScale = 0.07;             
+        const spacing = 10; 
+        const totalWidth = (this.activePowerupCount - 1) * spacing;
+        const firstIconX = startX - totalWidth / 2;
+
+        for (let i = 0; i < this.activePowerupCount; i++) {
+            const iconX = firstIconX + i * spacing; 
+            const icon = this.jumpIndicators.create(iconX, startY, 'powerup') as Phaser.GameObjects.Image;
+            icon.setScale(iconScale).setScrollFactor(0); 
+            
+            // Dim the icon if it represents a used jump for this airtime
+            if (i < this.midAirJumpsUsed) {
+                icon.setAlpha(0.3); // Set opacity low for used jumps
+            } else {
+                icon.setAlpha(1.0); // Full opacity for available jumps
+            }
+        }
     }
 } 
