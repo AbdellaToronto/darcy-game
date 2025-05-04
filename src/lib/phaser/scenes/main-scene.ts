@@ -309,13 +309,15 @@ export class MainScene extends Phaser.Scene {
         this.player.setCollideWorldBounds(true);
 
         // --- Adjust Physics Body After Scaling ---
-        // Reset body to match the scaled sprite dimensions initially.
-        // We might need to fine-tune size/offset later for better collision feel.
         if (this.player.body) {
-            this.player.body.setSize(); // Reset to scaled frame dimensions
+            // Explicitly set body size to match the sprite's current scaled dimensions
+            const scaledWidth = this.player.width; 
+            const scaledHeight = this.player.height;
+            this.player.body.setSize(scaledWidth, scaledHeight); 
             this.player.body.setOffset(0, 0); // Reset offset
-            this.playerCollisionWidth = this.player.body.width; // Store for platform generation
-            console.log(`Body size after scale and reset: ${this.player.body.width}x${this.player.body.height}`);
+            // Store the explicitly set width
+            this.playerCollisionWidth = this.player.body.width; 
+            console.log(`Explicitly set body size: ${this.player.body.width}x${this.player.body.height}`);
         } else {
             console.warn("Player body not available immediately after creation!");
         }
@@ -1075,9 +1077,8 @@ export class MainScene extends Phaser.Scene {
             currentSpeed = this.isRunning ? this.normalRunSpeed : this.walkSpeed;
         }
         
-        // --- Attack handling (updated to include obstacle checking) ---
+        // --- Attack handling --- 
         if (doAttack && !this.isAttacking) {
-            // Removed body?.touching.down check to allow mid-air attacks
             console.log("LOG: Attack conditions met. Playing 'attack'...");
             this.isAttacking = true;
             this.player.setVelocityX(0);
@@ -1230,31 +1231,45 @@ export class MainScene extends Phaser.Scene {
 
     // New method to check for and destroy obstacles when attacking
     checkAttackNearbyObstacles() {
-        if (!this.player || !this.obstacles) return;
+        if (!this.player || !this.obstacles || !this.player.body) return; // Added body check
         
-        // Calculate attack range in front of player
-        const attackRange = this.playerCollisionWidth * 2.5; // Increased range for better detection
-        const playerX = this.player.x;
-        const playerY = this.player.y;
+        // Define the attack area relative to the player's RIGHT edge
+        const attackOffsetX = 5;    // How far in front of the player's right edge
+        const attackWidth = 30;     // Double the previous width
+        const attackHeight = this.player.height * 0.8; // Keep height relative
         
-        console.log(`Checking for obstacles in attack range: ${attackRange}`);
+        const playerRightEdgeX = this.player.getRightCenter().x;
+        const attackX = playerRightEdgeX + attackOffsetX;
+        const attackY = this.player.y - attackHeight / 2; // Centered vertically on the player
+
+        const attackRect = new Phaser.Geom.Rectangle(attackX, attackY, attackWidth, attackHeight);
+
+        // Visualize the attack rectangle (Magenta, semi-transparent)
+        const graphics = this.add.graphics().setDepth(99); // High depth to render on top
+        graphics.fillStyle(0xff00ff, 0.4); 
+        graphics.fillRect(attackRect.x, attackRect.y, attackRect.width, attackRect.height);
+        this.time.delayedCall(100, () => graphics.destroy()); // Remove visual after 100ms
+
+        console.log(`Checking obstacles vs attack rect: [x:${attackX.toFixed(2)}, y:${attackY.toFixed(2)}, w:${attackWidth}, h:${attackHeight.toFixed(2)}]`);
         
-        // Get all obstacles within range
         this.obstacles.getChildren().forEach(child => {
             const obstacle = child as Phaser.Physics.Arcade.Sprite;
             
-            // Skip if already attacked
-            if (obstacle.getData('attacked')) return;
+            // Ensure obstacle has a body before checking intersection
+            if (obstacle.getData('attacked') || !obstacle.body) return;
             
-            // Check if obstacle is within attack range
-            const dx = obstacle.x - playerX;
-            const dy = obstacle.y - playerY;
-            const distance = Math.sqrt(dx * dx + dy * dy);
-            
-            console.log(`Obstacle at distance: ${distance}. Attacked: ${obstacle.getData('attacked')}`);
-            
-            if (distance < attackRange) {
-                console.log(`Attacked obstacle at distance: ${distance}`);
+            // Get the obstacle's physics body bounds
+            const obstacleBody = obstacle.body as Phaser.Physics.Arcade.Body;
+            const obstacleRect = new Phaser.Geom.Rectangle(
+                obstacleBody.x,
+                obstacleBody.y,
+                obstacleBody.width,
+                obstacleBody.height
+            );
+
+            // Check for intersection between attack rectangle and obstacle body rectangle
+            if (Phaser.Geom.Intersects.RectangleToRectangle(attackRect, obstacleRect)) {
+                console.log(`Attacked obstacle via intersection at [${obstacle.x.toFixed(2)}, ${obstacle.y.toFixed(2)}]`);
                 
                 // Mark as attacked
                 obstacle.setData('attacked', true);
@@ -1266,9 +1281,7 @@ export class MainScene extends Phaser.Scene {
                 this.showFloatingScore(obstacle.x, obstacle.y, `+${this.obstacleKillBonus}`);
                 
                 // Immediately disable collision on the obstacle
-                if (obstacle.body) {
-                    obstacle.body.enable = false;
-                }
+                obstacleBody.enable = false;
                 
                 // Play defeat animation
                 this.defeatObstacle(obstacle);

@@ -16,7 +16,8 @@ export const GameConfig: Phaser.Types.Core.GameConfig = {
     default: 'arcade',
     arcade: {
       gravity: { x: 0, y: 700 }, // Set to appropriate gravity for platformer
-      debug: false // Set to true during development for debugging
+      // Force debug drawing ON for testing
+      debug: false
     }
   },
   scene: [MainScene, GameOver, WinScene]
