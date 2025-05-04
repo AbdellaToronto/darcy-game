@@ -79,6 +79,10 @@ export class MainScene extends Phaser.Scene {
     private touchAttack = false;
     private pointer2PreviouslyDown = false;
 
+    // --- Coyote Time for Airborne Animation ---
+    private airborneTimer = 0; 
+    private coyoteTimeThreshold = 100; // Milliseconds grace period
+
     // --- New Gameplay State ---
     private score = 0;
     private lives!: number;
@@ -280,7 +284,7 @@ export class MainScene extends Phaser.Scene {
             this.anims.create({ key: 'walk', frames: walkFrames, frameRate: 10, repeat: -1 });
         }
         if (!this.anims.exists('run')) {
-            this.anims.create({ key: 'run', frames: runFrames, frameRate: 15, repeat: -1 });
+            this.anims.create({ key: 'run', frames: runFrames, frameRate: 12, repeat: -1 });
         }
         if (!this.anims.exists('attack')) {
             this.anims.create({ key: 'attack', frames: attackFrames, frameRate: 12 });
@@ -370,9 +374,9 @@ export class MainScene extends Phaser.Scene {
             this
         );
 
-        // --- Continue Platform Generation (Start further ahead) --- 
+        // --- REMOVE the Initial Randomized Buffer generation from create --- 
+        /*
         this.furthestPlatformX = initialGroundX; 
-        // Generate slightly more in create to ensure buffer
         const initialGenerationEndX = gameWidth + this.platformScrollMargin * 2;
         while(this.furthestPlatformX < initialGenerationEndX) { 
             const platformY = groundY - (Math.random() * 150);
@@ -383,6 +387,10 @@ export class MainScene extends Phaser.Scene {
                  this.furthestPlatformX += this.platformWidth * Phaser.Math.Between(2, 4); 
              }
         }
+        */
+        // Set furthestPlatformX to the end of the initial flat ground.
+        // generatePlatforms() in update() will take over from here.
+        this.furthestPlatformX = initialGroundX; 
 
         // --- UI Text --- 
         const textStyle = { fontSize: '24px', color: '#FFFF00', fontStyle: 'bold', stroke: '#000000', strokeThickness: 4 };
@@ -868,8 +876,9 @@ export class MainScene extends Phaser.Scene {
         const generationLimitX = this.targetWorldWidth - this.platformWidth; // Ensure space for last platform
         const groundY = this.scale.height - this.platformHeight / 2;
         
-        // Store the last platform's Y position for smoother transitions
-        let lastPlatformY = groundY;
+        const lastPlatformY = groundY; // Tracks the Y of the previously added platform
+        // Store the Y of the platform from the PREVIOUS iteration for deltaY calculation
+        let yBeforeCurrent = lastPlatformY; 
 
         // Generate new platforms ahead of the player, up to the limit
         while (this.furthestPlatformX < playerX + this.platformScrollMargin + this.scale.width && this.furthestPlatformX < generationLimitX) {
@@ -890,34 +899,48 @@ export class MainScene extends Phaser.Scene {
             // Never spawn platforms below ground level
             platformY = Math.min(platformY, groundY);
             
+            // *** Calculate deltaY BEFORE adding the platform and BEFORE updating lastPlatformY ***
+            const deltaY = yBeforeCurrent - platformY; // Positive means new platform (platformY) is higher
+
             this.addPlatform(this.furthestPlatformX + this.platformWidth / 2, platformY);
-            lastPlatformY = platformY; // Update the last platform Y
+            
+            // --- Modified Gap Calculation --- 
 
             // Calculate minimum gap based on player collision width
-            // Ensure gap is at least 1.5x the player's collision width
             const minGap = this.playerCollisionWidth * 1.5;
-            const minGapMultiplier = Math.max(1.2, minGap / this.platformWidth);
+            // Increase minimum factor from 1.2 to 1.35 to prevent too-small gaps
+            const minGapMultiplier = Math.max(1.35, minGap / this.platformWidth); 
             
-            // Calculate a platform-width-based maximum gap
-            // No more than 2 platform widths regardless of other factors
-            const absoluteMaxGapMultiplier = this.maxGapMultiplier;
-            
-            // Vary gaps, ensuring minimum and maximum gap requirements are met
-            if (Math.random() < 0.65) { 
-                // Smaller gaps, but still respect minimum
-                const gapMultiplier = Phaser.Math.FloatBetween(
-                    minGapMultiplier, // Use calculated minimum
-                    Math.min(minGapMultiplier + 0.5, absoluteMaxGapMultiplier) // Cap at max
-                );
-                this.furthestPlatformX += this.platformWidth * gapMultiplier;
-            } else { 
-                // Larger gaps, but still respect maximum
-                const gapMultiplier = Phaser.Math.FloatBetween(
-                    Math.min(minGapMultiplier + 0.3, absoluteMaxGapMultiplier - 0.1), // Don't go too close to max
-                    absoluteMaxGapMultiplier // Cap at absolute maximum
-                );
-                this.furthestPlatformX += this.platformWidth * gapMultiplier;
+            // Adjust the *maximum* gap multiplier based on upward jumps (using the correctly calculated deltaY)
+            let currentMaxGapMultiplier = this.maxGapMultiplier; 
+            if (deltaY > this.playerCharacterHeight * 0.3) { // If jumping up significantly (e.g., >30% player height)
+                // Reduce the max gap significantly after a high platform
+                currentMaxGapMultiplier = Math.max(minGapMultiplier, this.maxGapMultiplier * 0.6); // e.g. reduce max to 60% (ensure it's not less than min)
+            } else if (deltaY > 0) { // If jumping up even a little
+                 // Reduce max gap moderately
+                 currentMaxGapMultiplier = Math.max(minGapMultiplier, this.maxGapMultiplier * 0.8); // e.g. reduce max to 80%
             }
+            // Otherwise (same level or lower), use the default max gap multiplier
+
+            // Vary gaps, ensuring minimum and *adjusted* maximum gap requirements are met
+            let gapMultiplier;
+            if (Math.random() < 0.65) { 
+                // Smaller gaps
+                gapMultiplier = Phaser.Math.FloatBetween(
+                    minGapMultiplier, 
+                    Math.min(minGapMultiplier + 0.5, currentMaxGapMultiplier) // Use adjusted max
+                );
+            } else { 
+                // Larger gaps
+                gapMultiplier = Phaser.Math.FloatBetween(
+                    Math.min(minGapMultiplier + 0.3, currentMaxGapMultiplier - 0.1), // Use adjusted max
+                    currentMaxGapMultiplier // Use adjusted max
+                );
+            }
+            this.furthestPlatformX += this.platformWidth * gapMultiplier;
+
+            // *** Update yBeforeCurrent for the NEXT iteration AFTER calculating the gap for the current one ***
+            yBeforeCurrent = platformY; 
         }
 
         // --- Remove platforms far behind AND Destroy them ---
@@ -1069,14 +1092,32 @@ export class MainScene extends Phaser.Scene {
             this.player.setVelocityX(currentSpeed);
             this.player.setFlipX(false);
             const animKey = this.isRunning ? 'run' : 'walk';
-            if (this.player.body?.touching.down) { 
+            
+            // Check ground status using blocked.down
+            const isGrounded = this.player.body?.blocked.down ?? false;
+            
+            if (isGrounded) { 
+                // On the ground: Reset airborne timer and play run/walk
+                this.airborneTimer = 0;
                 if (this.player.anims.currentAnim?.key !== animKey) {
+                    // console.log(`---> Playing ${animKey}`); 
                     this.player.anims.play(animKey, true);
                 }
             } else {
-                if (this.player.anims.currentAnim?.key !== 'idle') {
-                     this.player.anims.play('idle', true);
+                // In the air: Start or check airborne timer
+                if (this.airborneTimer === 0) {
+                    // Just became airborne, start the timer
+                    this.airborneTimer = this.time.now;
                 }
+                
+                // Only switch to idle if airborne for longer than the threshold
+                if (this.time.now - this.airborneTimer > this.coyoteTimeThreshold) {
+                    if (this.player.anims.currentAnim?.key !== 'idle') {
+                        // console.log(`---> Playing idle (airborne)`);
+                         this.player.anims.play('idle', true);
+                    }
+                }
+                // Otherwise, do nothing yet, keep playing run/walk for the grace period
             }
         }
         
