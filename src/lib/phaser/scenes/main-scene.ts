@@ -90,6 +90,7 @@ export class MainScene extends Phaser.Scene {
     private scoreText?: Phaser.GameObjects.Text;
     private livesText?: Phaser.GameObjects.Text;
     private playerCharacterHeight = 0; // Store for platform height calculations
+    private attackEffectSprite?: Phaser.GameObjects.Sprite; // Add sprite property
 
     constructor() {
         super({ key: 'MainScene' });
@@ -201,6 +202,12 @@ export class MainScene extends Phaser.Scene {
             graphics.generateTexture('platform_rect', this.platformWidth, this.platformHeight);
             graphics.destroy();
         }
+
+        // Load the attack effect spritesheet
+        this.load.spritesheet('attack_effect', '/assets/attack.png', {
+            frameWidth: 320,
+            frameHeight: 400
+        });
     }
 
     create() {
@@ -512,6 +519,30 @@ export class MainScene extends Phaser.Scene {
 
         console.log(`CREATE START - this.lives = ${this.lives}`);
         console.log(`CREATE - Initialized UI Text with Lives: ${this.lives}`);
+
+        // Define the attack effect animation
+        if (!this.anims.exists('attack_crescent')) {
+            this.anims.create({
+                key: 'attack_crescent',
+                frames: this.anims.generateFrameNumbers('attack_effect', { start: 0, end: 5 }), // 6 frames
+                frameRate: 20, // Adjust frame rate as needed
+                repeat: 0 // Play only once
+            });
+        }
+
+        // Create the attack effect sprite (initially invisible and scaled)
+        this.attackEffectSprite = this.add.sprite(0, 0, 'attack_effect')
+            .setOrigin(0.5, 0.5) 
+            .setScale(0.8) // Apply 80% scale
+            .setVisible(false)
+            .setDepth(98); 
+
+        // --- Handle sprite animation completion --- 
+        this.attackEffectSprite.on(Phaser.Animations.Events.ANIMATION_COMPLETE, () => {
+            if (this.attackEffectSprite) {
+                this.attackEffectSprite.setVisible(false);
+            }
+        });
     }
 
     // New helper method to count active touches
@@ -1085,6 +1116,20 @@ export class MainScene extends Phaser.Scene {
             this.player.anims.play('attack', false);
             console.log(`LOG: Called play('attack'). Current anim: ${this.player.anims.currentAnim?.key}`);
             
+            // --- Trigger Attack Effect Sprite ---
+            if (this.player && this.player.body && this.attackEffectSprite) {
+                 const attackOffsetX = 5;    // Original offset from player right edge
+                 const attackWidth = 30;     // Hitbox width (visual center calculation)
+                 const extraShiftX = 25;   // Additional shift to the right
+
+                 const effectX = this.player.getRightCenter().x + attackOffsetX + (attackWidth / 2) + extraShiftX;
+                 const effectY = this.player.y; 
+                 
+                 this.attackEffectSprite.setPosition(effectX, effectY);
+                 this.attackEffectSprite.setVisible(true);
+                 this.attackEffectSprite.play('attack_crescent', true); 
+            }
+            
             // Check for nearby obstacles to destroy
             this.checkAttackNearbyObstacles();
         }
@@ -1231,24 +1276,18 @@ export class MainScene extends Phaser.Scene {
 
     // New method to check for and destroy obstacles when attacking
     checkAttackNearbyObstacles() {
-        if (!this.player || !this.obstacles || !this.player.body) return; // Added body check
+        if (!this.player || !this.obstacles || !this.player.body) return; 
         
         // Define the attack area relative to the player's RIGHT edge
-        const attackOffsetX = 5;    // How far in front of the player's right edge
-        const attackWidth = 30;     // Double the previous width
-        const attackHeight = this.player.height * 0.8; // Keep height relative
+        const attackOffsetX = 5;    
+        const attackWidth = 30;     
+        const attackHeight = this.player.height * 0.8; 
         
         const playerRightEdgeX = this.player.getRightCenter().x;
         const attackX = playerRightEdgeX + attackOffsetX;
-        const attackY = this.player.y - attackHeight / 2; // Centered vertically on the player
+        const attackY = this.player.y - attackHeight / 2; 
 
         const attackRect = new Phaser.Geom.Rectangle(attackX, attackY, attackWidth, attackHeight);
-
-        // Visualize the attack rectangle (Magenta, semi-transparent)
-        const graphics = this.add.graphics().setDepth(99); // High depth to render on top
-        graphics.fillStyle(0xff00ff, 0.4); 
-        graphics.fillRect(attackRect.x, attackRect.y, attackRect.width, attackRect.height);
-        this.time.delayedCall(100, () => graphics.destroy()); // Remove visual after 100ms
 
         console.log(`Checking obstacles vs attack rect: [x:${attackX.toFixed(2)}, y:${attackY.toFixed(2)}, w:${attackWidth}, h:${attackHeight.toFixed(2)}]`);
         
