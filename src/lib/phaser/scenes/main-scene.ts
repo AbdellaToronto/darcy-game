@@ -83,6 +83,10 @@ export class MainScene extends Phaser.Scene {
     private airborneTimer = 0; 
     private coyoteTimeThreshold = 100; // Milliseconds grace period
 
+    // --- Jump Buffering --- 
+    private jumpBufferTimer = 0;
+    private jumpBufferDuration = 150; // Milliseconds to buffer jump input
+
     // --- New Gameplay State ---
     private score = 0;
     private lives!: number;
@@ -1093,12 +1097,19 @@ export class MainScene extends Phaser.Scene {
         // --- Input States --- 
         const keyboardUp = this.cursors.up.isDown;
         const keyboardAttack = Phaser.Input.Keyboard.JustDown(this.spaceBar);
-        // During powerup, force running
         this.isRunning = this.isPoweredUp || this.shiftKey.isDown; 
-        const doJump = keyboardUp || this.touchJump;
+        
+        // Check for jump input (keyboard or touch)
+        const isJumpInputDown = keyboardUp || this.touchJump; 
+        this.touchJump = false; // Reset touch flag immediately
+
+        // --- Jump Buffering: Record jump input time --- 
+        if (isJumpInputDown) {
+            this.jumpBufferTimer = this.time.now; // Set/refresh buffer timer
+        }
+
         const doAttack = keyboardAttack || this.touchAttack;
-        this.touchJump = false;
-        this.touchAttack = false;
+        this.touchAttack = false; // Reset attack touch flag
         
         // Set current speed based on powerup state
         let currentSpeed;
@@ -1134,41 +1145,39 @@ export class MainScene extends Phaser.Scene {
             this.checkAttackNearbyObstacles();
         }
         
+        // --- Movement & Animation --- 
         if (!this.isAttacking) {
             this.player.setVelocityX(currentSpeed);
             this.player.setFlipX(false);
             const animKey = this.isRunning ? 'run' : 'walk';
             
-            // Check ground status using blocked.down
+            // Check ground status using blocked.down (from coyote time implementation)
             const isGrounded = this.player.body?.blocked.down ?? false;
             
             if (isGrounded) { 
                 // On the ground: Reset airborne timer and play run/walk
                 this.airborneTimer = 0;
                 if (this.player.anims.currentAnim?.key !== animKey) {
-                    // console.log(`---> Playing ${animKey}`); 
                     this.player.anims.play(animKey, true);
                 }
             } else {
-                // In the air: Start or check airborne timer
-                if (this.airborneTimer === 0) {
-                    // Just became airborne, start the timer
-                    this.airborneTimer = this.time.now;
-                }
-                
-                // Only switch to idle if airborne for longer than the threshold
+                // In the air: Handle coyote time for idle animation
+                if (this.airborneTimer === 0) { this.airborneTimer = this.time.now; }
                 if (this.time.now - this.airborneTimer > this.coyoteTimeThreshold) {
                     if (this.player.anims.currentAnim?.key !== 'idle') {
-                        // console.log(`---> Playing idle (airborne)`);
                          this.player.anims.play('idle', true);
                     }
                 }
-                // Otherwise, do nothing yet, keep playing run/walk for the grace period
             }
-        }
+        } // End if (!this.isAttacking)
         
-        if (doJump && this.player.body?.touching.down && !this.isAttacking) {
+        // --- Execute Jump (Uses Buffer & Ground Check) --- 
+        const jumpBufferActive = this.time.now - this.jumpBufferTimer < this.jumpBufferDuration;
+        const canJump = (this.player.body?.blocked.down ?? false); // Use blocked.down for jump condition too
+
+        if (jumpBufferActive && canJump && !this.isAttacking) {
             this.player.setVelocityY(this.jumpVelocity);
+            this.jumpBufferTimer = 0; // Consume the buffer so jump doesn't repeat
         }
         
         this.generatePlatforms();
